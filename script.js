@@ -99,6 +99,23 @@
   };
   const STONE_COUNT_RANGE = [3, 4];
 
+  // Throwing & skipping: a thrown stone arcs under gravity, and each
+  // time it meets the water its remaining speed/height are reduced by
+  // a forgiving blend of the throw's power, how flat its angle of
+  // approach was, and how the lapping wave happened to be timed —
+  // catching a wave at its peak (surging toward shore) kills the
+  // bounce, while catching the trough between waves gives the
+  // cleanest skip.
+  const GRAVITY = 1100; // pulls the stone's height back down, design px/sec^2
+  const THROW = {
+    speedMin: 260, speedMax: 560, // forward speed at release, design px/sec
+    liftMin: 90, liftMax: 230,    // initial upward speed at release, design px/sec
+    waveSpatialFreq: 0.0026,      // how quickly the lapping phase shifts with distance out to sea
+    popupHold: 0.5,               // seconds a skip count stays fully visible
+    popupFade: 0.9,               // seconds it then takes to fade away
+    sinkTime: 0.9                 // seconds a settled stone takes to fade out
+  };
+
   // -----------------------------------------------------------
   // Canvas setup
   // -----------------------------------------------------------
@@ -950,6 +967,157 @@
   }
 
   // -----------------------------------------------------------
+  // Throwing & skipping: a released stone follows a simple gravity
+  // arc — forward motion plus a rising and falling "height" drawn as
+  // extra lift above its shadow. Each time it meets the water,
+  // `handleImpact` decides whether it skips again, losing some speed
+  // and height, or settles and sinks for good.
+  // -----------------------------------------------------------
+
+  let throws = [];
+
+  // The lapping wave's phase at a point in design space, matching the
+  // ripple lines' rhythm: +1 is a wave at its peak (surging toward the
+  // shore), -1 is the trough between waves.
+  function waveSurfaceAt(x, y, t) {
+    const dist = x * SEA_DIR[0] + y * SEA_DIR[1];
+    const phase = t * (2 * Math.PI / WAVE.period) - dist * THROW.waveSpatialFreq;
+    return Math.sin(phase);
+  }
+
+  // Launches a held stone out to sea along the current aim direction,
+  // with a speed and lift drawn from the release power.
+  function throwStone(stone, power, dirX, dirY) {
+    const s = PLAYER_SHAPE;
+    throws.push({
+      shape: stone.shape,
+      x: player.x + dirX * (s.headR + 10),
+      y: player.y - s.legLen - s.torsoLen + s.armLen - 6,
+      dirX, dirY,
+      speed: THROW.speedMin + power * (THROW.speedMax - THROW.speedMin),
+      height: 0,
+      vHeight: THROW.liftMin + power * (THROW.liftMax - THROW.liftMin),
+      power,
+      rot: 0,
+      skips: 0,
+      state: 'flying',
+      sinkAge: 0,
+      popupText: '',
+      popupX: 0,
+      popupY: 0,
+      popupAge: null
+    });
+  }
+
+  // Decides what happens when the stone reaches the water (or sand)
+  // level: a forgiving blend of how flat the approach angle was, how
+  // the wave happened to be timed, and the throw's power decides
+  // whether it skips again or settles in for good.
+  function handleImpact(t) {
+    if (pointInSand(t.x, t.y)) {
+      t.state = 'sinking';
+      return;
+    }
+
+    const angleFactor = t.speed / Math.hypot(t.speed, Math.abs(t.vHeight));
+    const waveVal = waveSurfaceAt(t.x, t.y, elapsed);
+    const waveFactor = (1 - waveVal) / 2;
+    const bounceFactor = clamp(
+      angleFactor * 0.45 + waveFactor * 0.35 + t.power * 0.2, 0, 1
+    );
+
+    if (bounceFactor < 0.18 || t.speed < 50) {
+      t.state = 'sinking';
+      return;
+    }
+
+    t.skips += 1;
+    t.speed *= 0.45 + bounceFactor * 0.3;
+    t.vHeight = Math.max(60, t.speed * (0.35 + bounceFactor * 0.25));
+    t.popupText += (t.popupText ? ' ' : '') + t.skips + '...';
+    t.popupX = t.x;
+    t.popupY = t.y;
+    t.popupAge = 0;
+  }
+
+  // Advances every in-flight or settling stone.
+  function updateThrows(dt) {
+    for (let i = throws.length - 1; i >= 0; i--) {
+      const t = throws[i];
+
+      if (t.popupAge !== null) t.popupAge += dt;
+
+      if (t.state === 'sinking') {
+        t.sinkAge += dt;
+        const popupDone = t.popupAge === null ||
+          t.popupAge > THROW.popupHold + THROW.popupFade;
+        if (t.sinkAge > THROW.sinkTime && popupDone) throws.splice(i, 1);
+        continue;
+      }
+
+      const prevHeight = t.height;
+      t.vHeight -= GRAVITY * dt;
+      t.height += t.vHeight * dt;
+      t.x += t.dirX * t.speed * dt;
+      t.y += t.dirY * t.speed * dt;
+      t.rot += dt * (1.5 + t.speed * 0.004);
+
+      if (prevHeight >= 0 && t.height < 0) {
+        t.height = 0;
+        handleImpact(t);
+      }
+    }
+  }
+
+  // Draws every in-flight or settling stone: a soft shadow on the
+  // ground/water, the pebble itself (lifted, fading and shrinking as
+  // it settles), and a gently fading skip-count popup.
+  function drawThrows(ctx) {
+    throws.forEach(t => {
+      const sinkFrac = t.state === 'sinking'
+        ? clamp(t.sinkAge / THROW.sinkTime, 0, 1) : 0;
+
+      // Shadow on the sand or water surface.
+      ctx.save();
+      ctx.globalAlpha = 0.25 * (1 - sinkFrac);
+      ctx.beginPath();
+      ctx.ellipse(t.x, t.y, 11, 4, 0, 0, Math.PI * 2);
+      ctx.fillStyle = PALETTE.outline;
+      ctx.fill();
+      ctx.restore();
+
+      // The pebble itself, lifted by its height, fading and settling
+      // slightly below the surface as it sinks.
+      ctx.save();
+      ctx.globalAlpha = 1 - sinkFrac;
+      ctx.translate(t.x, t.y - t.height + sinkFrac * 6);
+      ctx.rotate(t.rot);
+      ctx.scale(1 - sinkFrac * 0.4, 1 - sinkFrac * 0.4);
+      drawPebble(ctx, t.shape);
+      ctx.restore();
+
+      // Skip-count popup: holds steady, then fades and drifts gently
+      // upward.
+      if (t.popupAge !== null) {
+        let alpha = 1;
+        if (t.popupAge > THROW.popupHold) {
+          alpha = clamp(1 - (t.popupAge - THROW.popupHold) / THROW.popupFade, 0, 1);
+        }
+        if (alpha > 0) {
+          ctx.save();
+          ctx.globalAlpha = alpha;
+          ctx.font = '600 26px "Segoe UI", system-ui, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'bottom';
+          ctx.fillStyle = PALETTE.outline;
+          ctx.fillText(t.popupText, t.popupX, t.popupY - 24 - t.popupAge * 14);
+          ctx.restore();
+        }
+      }
+    });
+  }
+
+  // -----------------------------------------------------------
   // Camera: pan & zoom
   // -----------------------------------------------------------
 
@@ -1085,6 +1253,10 @@
       return;
     }
     if (e.pointerId === aiming.pointerId) {
+      if (player.heldStones.length > 0) {
+        const stone = player.heldStones.pop();
+        throwStone(stone, aiming.power, aiming.dirX, aiming.dirY);
+      }
       aiming.pointerId = null;
       aiming.active = false;
       aiming.holdTime = 0;
@@ -1128,6 +1300,7 @@
     drawStones(ctx, stones);
     drawPlayer(ctx, player);
     drawAiming(ctx, player, aiming);
+    drawThrows(ctx);
 
     drawJoystick(ctx);
   }
@@ -1142,6 +1315,7 @@
     updatePlayer(dt);
     updateStones();
     updateAiming(dt);
+    updateThrows(dt);
   }
 
   function loop(timestamp) {
