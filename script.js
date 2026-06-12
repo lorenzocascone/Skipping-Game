@@ -67,6 +67,23 @@
   // How far the player can zoom relative to the base "cover" scale.
   const ZOOM = { min: 0.75, max: 1.6 };
 
+  // Whether this device supports touch — used to show the on-screen
+  // movement joystick only where it's actually needed.
+  const TOUCH_ENABLED = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+
+  // Stylized stick-figure proportions, in design px, plus the walk
+  // animation's swing/bob amounts and speeds.
+  const PLAYER_SHAPE = {
+    headR: 11,
+    torsoLen: 26,
+    legLen: 24,
+    armLen: 20,
+    limbSwing: 12,  // max sideways swing of hands/feet while walking
+    bobAmount: 3,   // vertical bob amplitude while walking
+    walkSpeed: 6,   // radians/sec the walk cycle advances while moving
+    speed: 220      // movement speed, design px/sec
+  };
+
   // -----------------------------------------------------------
   // Canvas setup
   // -----------------------------------------------------------
@@ -91,6 +108,74 @@
   let lastTimestamp = null;
 
   // -----------------------------------------------------------
+  // Player & input state
+  // -----------------------------------------------------------
+
+  // Player position in design-space pixels (same space as the scene
+  // geometry), facing direction, and walk-cycle phase driving the
+  // limb-swing/bob animation.
+  const player = {
+    x: 160,
+    y: 585,
+    facing: 1,
+    moving: false,
+    walkCycle: 0,
+    swingIntensity: 0
+  };
+
+  // Keyboard movement: WASD and arrow keys.
+  const keys = new Set();
+  window.addEventListener('keydown', e => {
+    const key = e.key.toLowerCase();
+    if (['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(key)) {
+      e.preventDefault();
+    }
+    keys.add(key);
+  });
+  window.addEventListener('keyup', e => {
+    keys.delete(e.key.toLowerCase());
+  });
+
+  // On-screen joystick for touch movement: a translucent circle in
+  // the bottom-left corner. `dx`/`dy` stay in [-1, 1] and scale the
+  // player's speed by how far the knob is dragged from centre.
+  const joystick = {
+    pointerId: null,
+    active: false,
+    radius: 60,
+    baseX: 0,
+    baseY: 0,
+    knobX: 0,
+    knobY: 0,
+    dx: 0,
+    dy: 0
+  };
+
+  function updateJoystickBase() {
+    joystick.baseX = joystick.radius + 30;
+    joystick.baseY = canvas.height - joystick.radius - 30;
+  }
+
+  function updateJoystickVector(clientX, clientY) {
+    let dx = clientX - joystick.baseX;
+    let dy = clientY - joystick.baseY;
+    const dist = Math.hypot(dx, dy);
+    if (dist > joystick.radius) {
+      dx = (dx / dist) * joystick.radius;
+      dy = (dy / dist) * joystick.radius;
+    }
+    joystick.knobX = dx;
+    joystick.knobY = dy;
+    if (dist < 8) {
+      joystick.dx = 0;
+      joystick.dy = 0;
+    } else {
+      joystick.dx = dx / joystick.radius;
+      joystick.dy = dy / joystick.radius;
+    }
+  }
+
+  // -----------------------------------------------------------
   // Small helpers
   // -----------------------------------------------------------
 
@@ -108,6 +193,21 @@
 
   function clamp(value, min, max) {
     return Math.min(Math.max(value, min), max);
+  }
+
+  // Ray-casting point-in-polygon test, used to keep the player on
+  // the sand.
+  function pointInPolygon(x, y, poly) {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const [xi, yi] = poly[i];
+      const [xj, yj] = poly[j];
+      if ((yi > y) !== (yj > y) &&
+          x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) {
+        inside = !inside;
+      }
+    }
+    return inside;
   }
 
   // Converts an array of [fractionX, fractionY] points into pixel
@@ -267,6 +367,21 @@
     const sandTop = wobble(subdivide(toPixels(SAND_TOP, w, h)), rng, 8);
     sandTop[0] = waterline[MOUNTAIN_FOOT.length];
 
+    // The walkable sand area, as a polygon: the shoreline down one
+    // side, across the bottom margin, up the left margin, then back
+    // along the headland's base — the same boundary drawSand fills.
+    const shore = waterline.slice(MOUNTAIN_FOOT.length);
+    const lastShore = shore[shore.length - 1];
+    const topLeft = sandTop[sandTop.length - 1];
+    const sandPolygon = shore.concat([
+      [lastShore[0], h + DESIGN.marginBottom],
+      [topLeft[0], h + DESIGN.marginBottom],
+      [topLeft[0], topLeft[1]]
+    ]);
+    for (let i = sandTop.length - 2; i >= 0; i--) {
+      sandPolygon.push(sandTop[i]);
+    }
+
     return {
       mountainFar: mountainFar,
       mountainNear: mountainNear,
@@ -279,6 +394,7 @@
       shore: waterline.slice(MOUNTAIN_FOOT.length),
       sandTop: sandTop,
       ripples: RIPPLES.map(line => wobble(toPixels(line, w, h), rng, 5)),
+      sandPolygon: sandPolygon,
       oceanTopY: OCEAN_TOP * h,
       mountainNearBaseY: MOUNTAIN_NEAR_BASE * h,
       sandOverlap: SAND_OVERLAP * h
@@ -446,6 +562,137 @@
   }
 
   // -----------------------------------------------------------
+  // Player: a simple stick figure, confined to the sand
+  // -----------------------------------------------------------
+
+  function pointInSand(x, y) {
+    return pointInPolygon(x, y, scene.sandPolygon);
+  }
+
+  function movePlayer(dx, dy) {
+    const nx = player.x + dx;
+    const ny = player.y + dy;
+    if (pointInSand(nx, ny)) {
+      player.x = nx;
+      player.y = ny;
+      return;
+    }
+    // Slide along whichever axis still lands on sand, so walking
+    // into the waterline or the headland glides along the edge
+    // instead of stopping dead.
+    if (pointInSand(nx, player.y)) {
+      player.x = nx;
+    } else if (pointInSand(player.x, ny)) {
+      player.y = ny;
+    }
+  }
+
+  function updatePlayer(dt) {
+    let dx = 0;
+    let dy = 0;
+    if (keys.has('w') || keys.has('arrowup')) dy -= 1;
+    if (keys.has('s') || keys.has('arrowdown')) dy += 1;
+    if (keys.has('a') || keys.has('arrowleft')) dx -= 1;
+    if (keys.has('d') || keys.has('arrowright')) dx += 1;
+
+    if (dx === 0 && dy === 0 && joystick.active) {
+      dx = joystick.dx;
+      dy = joystick.dy;
+    }
+
+    const mag = Math.hypot(dx, dy);
+    player.moving = mag > 0.05;
+
+    if (player.moving) {
+      const speedScale = Math.min(mag, 1);
+      const step = PLAYER_SHAPE.speed * speedScale * dt;
+      movePlayer((dx / mag) * step, (dy / mag) * step);
+      if (Math.abs(dx) > 0.1) player.facing = dx > 0 ? 1 : -1;
+      player.walkCycle += dt * PLAYER_SHAPE.walkSpeed;
+    }
+
+    // Ease the limb-swing/bob in and out smoothly rather than
+    // snapping to a stop when the player releases the controls.
+    const target = player.moving ? 1 : 0;
+    player.swingIntensity += (target - player.swingIntensity) * Math.min(1, dt * 6);
+  }
+
+  // A small, stylized stick figure: round head, straight torso, and
+  // swinging arms/legs, drawn in the same dark outline colour as the
+  // rest of the scene so it reads as part of the same hand-drawn world.
+  function drawPlayer(ctx, p) {
+    const s = PLAYER_SHAPE;
+    const swing = Math.sin(p.walkCycle) * s.limbSwing * p.swingIntensity;
+    const bob = Math.sin(p.walkCycle * 2) * s.bobAmount * p.swingIntensity;
+
+    const hipY = -s.legLen;
+    const shoulderY = hipY - s.torsoLen;
+    const headY = shoulderY - s.headR - 3;
+
+    ctx.save();
+    ctx.translate(p.x, p.y + bob);
+    ctx.strokeStyle = PALETTE.outline;
+    ctx.lineWidth = STROKE.thick;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    // Legs
+    ctx.beginPath();
+    ctx.moveTo(0, hipY);
+    ctx.lineTo(swing, 0);
+    ctx.moveTo(0, hipY);
+    ctx.lineTo(-swing, 0);
+    ctx.stroke();
+
+    // Torso
+    ctx.beginPath();
+    ctx.moveTo(0, hipY);
+    ctx.lineTo(0, shoulderY);
+    ctx.stroke();
+
+    // Arms — each swings opposite the same-side leg, like a natural walk
+    ctx.beginPath();
+    ctx.moveTo(0, shoulderY);
+    ctx.lineTo(-swing, shoulderY + s.armLen);
+    ctx.moveTo(0, shoulderY);
+    ctx.lineTo(swing, shoulderY + s.armLen);
+    ctx.stroke();
+
+    // Head, with a short "nose" mark showing which way it's facing
+    ctx.beginPath();
+    ctx.arc(0, headY, s.headR, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(p.facing * s.headR * 0.3, headY);
+    ctx.lineTo(p.facing * s.headR * 1.2, headY);
+    ctx.lineWidth = STROKE.texture;
+    ctx.stroke();
+
+    ctx.restore();
+  }
+
+  // Draws the on-screen movement joystick in screen space (unaffected
+  // by the camera transform), only on touch devices.
+  function drawJoystick(ctx) {
+    if (!TOUCH_ENABLED) return;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+    ctx.beginPath();
+    ctx.arc(joystick.baseX, joystick.baseY, joystick.radius, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(46, 58, 86, 0.12)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(46, 58, 86, 0.35)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(joystick.baseX + joystick.knobX, joystick.baseY + joystick.knobY, joystick.radius * 0.45, 0, Math.PI * 2);
+    ctx.fillStyle = joystick.active ? 'rgba(46, 58, 86, 0.35)' : 'rgba(46, 58, 86, 0.2)';
+    ctx.fill();
+  }
+
+  // -----------------------------------------------------------
   // Camera: pan & zoom
   // -----------------------------------------------------------
 
@@ -495,11 +742,26 @@
   const pointers = new Map();
 
   canvas.addEventListener('pointerdown', e => {
+    if (TOUCH_ENABLED && joystick.pointerId === null) {
+      const dist = Math.hypot(e.clientX - joystick.baseX, e.clientY - joystick.baseY);
+      if (dist <= joystick.radius * 1.5) {
+        canvas.setPointerCapture(e.pointerId);
+        joystick.pointerId = e.pointerId;
+        joystick.active = true;
+        updateJoystickVector(e.clientX, e.clientY);
+        return;
+      }
+    }
     canvas.setPointerCapture(e.pointerId);
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   });
 
   canvas.addEventListener('pointermove', e => {
+    if (e.pointerId === joystick.pointerId) {
+      updateJoystickVector(e.clientX, e.clientY);
+      return;
+    }
+
     const prev = pointers.get(e.pointerId);
     if (!prev) return;
 
@@ -529,6 +791,15 @@
   });
 
   function releasePointer(e) {
+    if (e.pointerId === joystick.pointerId) {
+      joystick.pointerId = null;
+      joystick.active = false;
+      joystick.dx = 0;
+      joystick.dy = 0;
+      joystick.knobX = 0;
+      joystick.knobY = 0;
+      return;
+    }
     pointers.delete(e.pointerId);
   }
   canvas.addEventListener('pointerup', releasePointer);
@@ -563,13 +834,19 @@
     drawMountainFar(ctx, scene);
     drawSand(ctx, scene, h);
     drawWaterline(ctx, scene);
+    drawPlayer(ctx, player);
+
+    drawJoystick(ctx);
   }
 
   function update(timestamp) {
+    let dt = 0;
     if (lastTimestamp !== null) {
-      elapsed += (timestamp - lastTimestamp) / 1000;
+      dt = (timestamp - lastTimestamp) / 1000;
+      elapsed += dt;
     }
     lastTimestamp = timestamp;
+    updatePlayer(dt);
   }
 
   function loop(timestamp) {
@@ -586,6 +863,7 @@
     canvas.height = window.innerHeight;
     baseScale = Math.max(canvas.width / DESIGN.w, canvas.height / DESIGN.h);
     clampCam();
+    updateJoystickBase();
   }
 
   window.addEventListener('resize', resize);
