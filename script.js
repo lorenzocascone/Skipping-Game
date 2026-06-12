@@ -29,15 +29,29 @@
     wave: 4     // bold sweeping wave lines on the sea
   };
 
+  // The scene is laid out once in a fixed "design space" and then
+  // uniformly scaled to COVER the real canvas (cropping whatever
+  // overflows). This keeps every shape's proportions intact on any
+  // screen — portrait phones included — instead of squashing them.
+  const DESIGN = {
+    w: 1600,
+    h: 900,
+    anchorX: 0.36, // keep the crop centred near the shoreline...
+    anchorY: 0.55  // ...and slightly toward the water
+  };
+
   // -----------------------------------------------------------
   // Canvas setup
   // -----------------------------------------------------------
   const canvas = document.getElementById('scene');
   const ctx = canvas.getContext('2d');
 
-  // Holds the computed pixel geometry for the current canvas size.
-  // Rebuilt whenever the window is resized.
+  // Pixel geometry in design space — built once, never stretched.
   let scene = null;
+
+  // How design space maps onto the real canvas (uniform scale plus
+  // an offset). Recomputed whenever the window is resized.
+  let view = { scale: 1, ox: 0, oy: 0 };
 
   // -----------------------------------------------------------
   // Small helpers
@@ -53,6 +67,10 @@
       t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
       return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
+  }
+
+  function clamp(value, min, max) {
+    return Math.min(Math.max(value, min), max);
   }
 
   // Converts an array of [fractionX, fractionY] points into pixel
@@ -139,15 +157,14 @@
     [0.44, 0.50], [0.28, 0.488], [0.12, 0.476], [-0.02, 0.468]
   ];
 
-  // Bold, sweeping wave lines flowing across the sea, like the thick
-  // meandering strokes in the reference. Their left ends get covered
-  // by the sand shape, so they appear to emerge from the shoreline.
+  // Bold wave lines lapping at the beach: each one echoes the
+  // shoreline's diagonal sweep, running top-to-bottom progressively
+  // further out in the water, like ripples rolling toward the sand.
   const RIPPLES = [
-    [[0.58, 0.578], [0.70, 0.560], [0.82, 0.585], [0.92, 0.565], [1.00, 0.575]],
-    [[0.30, 0.625], [0.48, 0.602], [0.66, 0.650], [0.86, 0.615], [1.00, 0.635]],
-    [[0.36, 0.715], [0.55, 0.692], [0.74, 0.744], [0.92, 0.710], [1.00, 0.722]],
-    [[0.26, 0.815], [0.48, 0.790], [0.70, 0.844], [0.90, 0.806], [1.00, 0.825]],
-    [[0.34, 0.915], [0.56, 0.890], [0.78, 0.942], [1.00, 0.910]]
+    [[0.52, 0.56], [0.42, 0.64], [0.47, 0.73], [0.34, 0.84], [0.39, 0.93], [0.26, 1.00]],
+    [[0.62, 0.60], [0.54, 0.68], [0.58, 0.76], [0.47, 0.86], [0.51, 0.94], [0.40, 1.00]],
+    [[0.74, 0.62], [0.66, 0.70], [0.70, 0.78], [0.60, 0.88], [0.64, 0.96], [0.55, 1.00]],
+    [[0.88, 0.64], [0.80, 0.72], [0.84, 0.80], [0.76, 0.90], [0.79, 1.00]]
   ];
 
   const OCEAN_TOP = 0.50;          // where the sea begins (fraction of height)
@@ -170,6 +187,11 @@
     // the two strokes join without a visible blob at the tip.
     waterline[0] = mountainFar[mountainFar.length - 1];
 
+    // The sand's top edge starts exactly at the shoreline's first
+    // point, so the three shapes meeting there close without gaps.
+    const sandTop = wobble(toPixels(SAND_TOP, w, h), rng, 5);
+    sandTop[0] = waterline[MOUNTAIN_FOOT.length];
+
     return {
       mountainFar: mountainFar,
       mountainNear: wobble(toPixels(MOUNTAIN_NEAR_RIDGE, w, h), rng, 6),
@@ -178,7 +200,7 @@
       // The shoreline reuses the waterline's wobbled coordinates so
       // the sand fill and the stroke share an identical boundary.
       shore: waterline.slice(MOUNTAIN_FOOT.length),
-      sandTop: wobble(toPixels(SAND_TOP, w, h), rng, 5),
+      sandTop: sandTop,
       ripples: RIPPLES.map(line => wobble(toPixels(line, w, h), rng, 5)),
       oceanTopY: OCEAN_TOP * h,
       mountainNearBaseY: MOUNTAIN_NEAR_BASE * h,
@@ -254,10 +276,12 @@
     ctx.beginPath();
     tracePath(ctx, ridge);
     tracePath(ctx, foot, true);
-    // Sand top, right to left, tucked under the future sand fill
-    for (const [x, y] of scene.sandTop) {
-      ctx.lineTo(x, y + scene.sandOverlap);
-    }
+    // Sand top, right to left, tucked under the future sand fill.
+    // The first point stays exactly on the shoreline corner so no
+    // sliver of the silhouette pokes out into the water there.
+    scene.sandTop.forEach(([x, y], i) => {
+      ctx.lineTo(x, i === 0 ? y : y + scene.sandOverlap);
+    });
     ctx.closePath();
     ctx.fillStyle = PALETTE.mountainFar;
     ctx.fill();
@@ -288,11 +312,19 @@
     ctx.fill();
   }
 
-  // One continuous bold stroke from the headland's foot down along
-  // the shoreline — the line that defines the whole coast.
+  // The bold line from the headland's foot down along the shoreline.
+  // Stroked in two segments that share the shore's first point: the
+  // smoothing in tracePath cuts intermediate corners, and a single
+  // stroke would drift off the sand fill's edge right there.
   function drawWaterline(ctx, scene) {
+    const split = MOUNTAIN_FOOT.length;
+
     ctx.beginPath();
-    tracePath(ctx, scene.waterline);
+    tracePath(ctx, scene.waterline.slice(0, split + 1));
+    strokeOutline(ctx, STROKE.thick);
+
+    ctx.beginPath();
+    tracePath(ctx, scene.waterline.slice(split));
     strokeOutline(ctx, STROKE.thick);
   }
 
@@ -304,8 +336,11 @@
   // headland sits in front of it, the sand covers the headland's
   // lower-left base, and the waterline stroke goes on top of it all.
   function render() {
-    const w = canvas.width;
-    const h = canvas.height;
+    const w = DESIGN.w;
+    const h = DESIGN.h;
+
+    // Map design space onto the canvas: uniform scale, no stretching.
+    ctx.setTransform(view.scale, 0, 0, view.scale, view.ox, view.oy);
 
     drawSky(ctx, w, h);
     drawMountainNear(ctx, scene);
@@ -330,15 +365,27 @@
   // -----------------------------------------------------------
   // Resize handling
   // -----------------------------------------------------------
+
+  // Scale design space up until it covers the whole canvas, then
+  // crop the overflow, keeping the view anchored near the shoreline
+  // so the interesting part of the scene stays on screen.
   function resize() {
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
-    scene = buildScene(canvas.width, canvas.height);
+
+    const scale = Math.max(canvas.width / DESIGN.w, canvas.height / DESIGN.h);
+    const visibleW = canvas.width / scale;
+    const visibleH = canvas.height / scale;
+    const left = clamp(DESIGN.anchorX * DESIGN.w - visibleW / 2, 0, DESIGN.w - visibleW);
+    const top = clamp(DESIGN.anchorY * DESIGN.h - visibleH / 2, 0, DESIGN.h - visibleH);
+
+    view = { scale: scale, ox: -left * scale, oy: -top * scale };
   }
 
   window.addEventListener('resize', resize);
 
   // Kick everything off
+  scene = buildScene(DESIGN.w, DESIGN.h);
   resize();
   requestAnimationFrame(loop);
 })();
