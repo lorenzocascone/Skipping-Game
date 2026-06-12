@@ -14,9 +14,13 @@ body {
   background-color: #fbf5ee;
 }
 
-/* The canvas fills the entire window with no inline gaps */
+/* The canvas fills the entire window with no inline gaps.
+   touch-action: none hands all touch gestures (drag, pinch) to the
+   game's own pan/zoom handling instead of the browser. */
 #scene {
   display: block;
   width: 100vw;
   height: 100vh;
+  touch-action: none;
+  cursor: grab;
 }
