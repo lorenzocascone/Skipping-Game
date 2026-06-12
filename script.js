@@ -34,7 +34,8 @@
   const STROKE = {
     thick: 5,    // shoreline, mountain ridges
     wave: 4,     // bold sweeping wave lines on the sea
-    texture: 2.5 // subtle contour marks on the mountain faces
+    texture: 2.5, // subtle contour marks on the mountain faces
+    pebble: 4    // bold outline on stones, to match the rest of the line art
   };
 
   // Slow, rhythmic motion for the ripple lines: each one drifts a
@@ -135,7 +136,7 @@
     moving: false,
     walkCycle: 0,
     swingIntensity: 0,
-    stoneCount: 0
+    heldStones: []
   };
 
   // Aiming/throwing state: while the player holds a stone and holds
@@ -742,6 +743,36 @@
 
   let stones = [];
 
+  // Builds a slightly irregular closed outline for a pebble: points
+  // scattered around an ellipse with randomized radii, later smoothed
+  // by tracePath into a rounded, hand-drawn blob rather than a plain
+  // oval.
+  function pebbleShape(rx, ry) {
+    const n = 7 + Math.floor(Math.random() * 2);
+    const points = [];
+    for (let i = 0; i < n; i++) {
+      const angle = (i / n) * Math.PI * 2;
+      const r = 0.7 + Math.random() * 0.5;
+      points.push([Math.cos(angle) * rx * r, Math.sin(angle) * ry * r]);
+    }
+    return points;
+  }
+
+  // Fills and strokes a closed pebble outline (already positioned via
+  // the current transform) with a bold line matching the rest of the
+  // scene's hand-drawn style.
+  function drawPebble(ctx, points) {
+    ctx.beginPath();
+    tracePath(ctx, points.concat([points[0], points[1]]));
+    ctx.closePath();
+    ctx.fillStyle = PALETTE.stone;
+    ctx.fill();
+    ctx.strokeStyle = PALETTE.outline;
+    ctx.lineWidth = STROKE.pebble;
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+  }
+
   // Scatters a handful of small stones at random points on the sand,
   // away from the player's starting position.
   function spawnStones() {
@@ -756,11 +787,12 @@
       const y = bounds.minY + Math.random() * (bounds.maxY - bounds.minY);
       if (!pointInSand(x, y)) continue;
       if (Math.hypot(x - player.x, y - player.y) < 60) continue;
+      const rx = 7 + Math.random() * 5;
+      const ry = 5 + Math.random() * 3;
       list.push({
         x, y,
-        rx: 7 + Math.random() * 5,
-        ry: 5 + Math.random() * 3,
         rot: Math.random() * Math.PI,
+        shape: pebbleShape(rx, ry),
         collected: false
       });
     }
@@ -775,7 +807,7 @@
       const d = Math.hypot(stone.x - player.x, stone.y - player.y);
       if (d < pickupRadius) {
         stone.collected = true;
-        player.stoneCount++;
+        player.heldStones.push({ shape: stone.shape });
       }
     });
   }
@@ -788,35 +820,25 @@
       ctx.save();
       ctx.translate(stone.x, stone.y);
       ctx.rotate(stone.rot);
-      ctx.beginPath();
-      ctx.ellipse(0, 0, stone.rx, stone.ry, 0, 0, Math.PI * 2);
-      ctx.fillStyle = PALETTE.stone;
-      ctx.fill();
-      ctx.strokeStyle = PALETTE.outline;
-      ctx.lineWidth = STROKE.texture;
-      ctx.stroke();
+      drawPebble(ctx, stone.shape);
       ctx.restore();
     });
   }
 
-  // Draws a small stack of held stones near the player's hand. Called
-  // from drawPlayer, inside its translated/local coordinate space.
+  // Draws a small stack of held stones tucked against the player's
+  // hand, on the side they're facing. Called from drawPlayer, inside
+  // its translated/local coordinate space.
   function drawHeldStones(ctx, p) {
-    if (p.stoneCount <= 0) return;
-    const baseX = p.facing * 16;
-    const baseY = -6;
-    for (let i = 0; i < p.stoneCount; i++) {
+    if (p.heldStones.length === 0) return;
+    const s = PLAYER_SHAPE;
+    const handX = p.facing * (s.headR + 8);
+    const handY = -s.legLen - s.torsoLen + s.armLen - 6;
+    p.heldStones.forEach((stone, i) => {
       ctx.save();
-      ctx.translate(baseX, baseY - i * 6);
-      ctx.beginPath();
-      ctx.ellipse(0, 0, 6, 4, 0, 0, Math.PI * 2);
-      ctx.fillStyle = PALETTE.stone;
-      ctx.fill();
-      ctx.strokeStyle = PALETTE.outline;
-      ctx.lineWidth = STROKE.texture;
-      ctx.stroke();
+      ctx.translate(handX, handY - i * 7);
+      drawPebble(ctx, stone.shape);
       ctx.restore();
-    }
+    });
   }
 
   // -----------------------------------------------------------
@@ -999,7 +1021,7 @@
 
     // Holding a stone and pressing elsewhere starts an aim/throw,
     // rather than panning the camera.
-    if (player.stoneCount > 0 && aiming.pointerId === null && pointers.size === 0) {
+    if (player.heldStones.length > 0 && aiming.pointerId === null && pointers.size === 0) {
       canvas.setPointerCapture(e.pointerId);
       aiming.pointerId = e.pointerId;
       aiming.active = true;
