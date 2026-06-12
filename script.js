@@ -2,8 +2,9 @@
 // Quiet Shore — a calm, minimalist beach scene
 // =============================================================
 // This file sets up a full-screen canvas, a basic game loop, and
-// draws a static pastel background made of three layers:
-//   sky -> mountains -> ocean (with ripples) -> sand
+// draws a static pastel background as a side view looking down the
+// coast: sand on the left, sea on the right, a big headland rising
+// from the beach, and a low mountain range across the water.
 // Lines are drawn with a slight hand-drawn "wobble" so the scene
 // feels soft and imperfect rather than mechanically precise.
 // =============================================================
@@ -19,14 +20,13 @@
     mountainFar: '#cfd6ec',
     mountainNear: '#bcccec',
     ocean: '#bfe3ec',
-    ripple: 'rgba(46, 58, 86, 0.22)',
     sand: '#f8dcc8',
     outline: '#2e3a56'
   };
 
   const STROKE = {
     thick: 5,   // shoreline, mountain ridges
-    thin: 2     // ocean ripples
+    wave: 4     // bold sweeping wave lines on the sea
   };
 
   // -----------------------------------------------------------
@@ -73,8 +73,14 @@
   // Traces a smooth curve through a list of points (using the
   // classic "quadratic curve through midpoints" technique) onto an
   // already-open path. Does not stroke/fill — caller decides that.
-  function tracePath(ctx, points) {
-    ctx.moveTo(points[0][0], points[0][1]);
+  // Pass `connect: true` to continue from the current path position
+  // instead of starting a new subpath.
+  function tracePath(ctx, points, connect) {
+    if (connect) {
+      ctx.lineTo(points[0][0], points[0][1]);
+    } else {
+      ctx.moveTo(points[0][0], points[0][1]);
+    }
     for (let i = 1; i < points.length - 1; i++) {
       const [x0, y0] = points[i];
       const [x1, y1] = points[i + 1];
@@ -90,38 +96,63 @@
   // Scene layout (defined as fractions of canvas width/height)
   // -----------------------------------------------------------
 
-  // Far mountain ridge — broad shape sitting behind everything.
+  // Big headland rising from the beach on the left, like the large
+  // mountain in the reference. Drawn in FRONT of the sea; its
+  // lower-left base disappears behind the sand.
   const MOUNTAIN_FAR_RIDGE = [
-    [0.00, 0.46], [0.08, 0.32], [0.16, 0.38], [0.26, 0.16],
-    [0.36, 0.30], [0.46, 0.20], [0.56, 0.34], [0.66, 0.46]
+    [-0.02, 0.60], [0.08, 0.45], [0.16, 0.47], [0.25, 0.27],
+    [0.33, 0.23], [0.42, 0.31], [0.52, 0.43], [0.60, 0.48], [0.64, 0.56]
   ];
 
-  // Nearer, smaller mountain peeking in from the right.
+  // Smaller, lower range on the right horizon, drawn BEHIND the sea
+  // so it reads as land across the water.
   const MOUNTAIN_NEAR_RIDGE = [
-    [0.45, 0.50], [0.55, 0.34], [0.64, 0.42], [0.74, 0.24],
-    [0.84, 0.38], [0.95, 0.30], [1.00, 0.40]
+    [0.62, 0.54], [0.70, 0.46], [0.77, 0.49], [0.85, 0.42],
+    [0.93, 0.47], [1.00, 0.49]
   ];
 
-  // Gentle ripple lines drawn across the ocean. These run the full
-  // width of the canvas but get covered on the left by the sand
-  // shape below, so they only end up visible over the water.
-  const RIPPLES = [
-    [[0.00, 0.46], [0.25, 0.45], [0.50, 0.47], [0.75, 0.45], [1.00, 0.46]],
-    [[0.00, 0.55], [0.22, 0.54], [0.48, 0.565], [0.74, 0.55], [1.00, 0.555]],
-    [[0.00, 0.65], [0.20, 0.645], [0.45, 0.665], [0.70, 0.65], [1.00, 0.66]],
-    [[0.00, 0.76], [0.25, 0.755], [0.50, 0.775], [0.75, 0.76], [1.00, 0.77]],
-    [[0.00, 0.88], [0.25, 0.875], [0.50, 0.89], [0.75, 0.88], [1.00, 0.885]]
+  // Waterline at the headland's foot — where the mountain meets the
+  // sea. It continues into SHORE_LINE as one bold stroke.
+  const MOUNTAIN_FOOT = [
+    [0.64, 0.56], [0.54, 0.545]
   ];
 
-  // Wavy shoreline separating the sand (left) from the ocean (right),
-  // running roughly top-to-bottom so the beach reads as a side view
-  // looking down the coast.
+  // Wavy shoreline separating the sand (left) from the sea (right),
+  // sweeping diagonally down toward the bottom-left so the view
+  // reads as looking along the coast, not straight out to sea.
   const SHORE_LINE = [
-    [0.34, 0.40], [0.24, 0.52], [0.33, 0.64], [0.19, 0.77], [0.27, 0.90], [0.15, 1.00]
+    [0.44, 0.50], [0.32, 0.60], [0.38, 0.70], [0.24, 0.82],
+    [0.30, 0.92], [0.14, 1.00]
   ];
 
-  const OCEAN_TOP = 0.40; // where the ocean rectangle begins (fraction of height)
-  const MOUNTAIN_BASE = 0.55; // how far down the mountain fill extends (hidden behind ocean)
+  // The sea's top edge, running from the right edge of the canvas to
+  // just behind the headland, whose silhouette covers its left end.
+  const HORIZON = [
+    [1.02, 0.503], [0.86, 0.508], [0.72, 0.504], [0.58, 0.515]
+  ];
+
+  // Soft upper boundary of the sand where it meets the headland's
+  // base (right to left). Unstroked — just a gentle colour edge. It
+  // rises gently toward the left edge, staying above the sea's top
+  // so no strip of water peeks out behind the beach.
+  const SAND_TOP = [
+    [0.44, 0.50], [0.28, 0.488], [0.12, 0.476], [-0.02, 0.468]
+  ];
+
+  // Bold, sweeping wave lines flowing across the sea, like the thick
+  // meandering strokes in the reference. Their left ends get covered
+  // by the sand shape, so they appear to emerge from the shoreline.
+  const RIPPLES = [
+    [[0.58, 0.578], [0.70, 0.560], [0.82, 0.585], [0.92, 0.565], [1.00, 0.575]],
+    [[0.30, 0.625], [0.48, 0.602], [0.66, 0.650], [0.86, 0.615], [1.00, 0.635]],
+    [[0.36, 0.715], [0.55, 0.692], [0.74, 0.744], [0.92, 0.710], [1.00, 0.722]],
+    [[0.26, 0.815], [0.48, 0.790], [0.70, 0.844], [0.90, 0.806], [1.00, 0.825]],
+    [[0.34, 0.915], [0.56, 0.890], [0.78, 0.942], [1.00, 0.910]]
+  ];
+
+  const OCEAN_TOP = 0.50;          // where the sea begins (fraction of height)
+  const MOUNTAIN_NEAR_BASE = 0.55; // right range's hidden baseline (behind the sea)
+  const SAND_OVERLAP = 0.025;      // how far the headland tucks under the sand
 
   // -----------------------------------------------------------
   // Build pixel-space geometry for the current canvas size
@@ -129,13 +160,29 @@
   function buildScene(w, h) {
     const rng = createRng(42); // fixed seed keeps the wobble consistent
 
+    // The foot + shoreline form one continuous bold waterline stroke.
+    const waterline = wobble(
+      toPixels(MOUNTAIN_FOOT.concat(SHORE_LINE), w, h), rng, 6
+    );
+    const mountainFar = wobble(toPixels(MOUNTAIN_FAR_RIDGE, w, h), rng, 6);
+
+    // The waterline starts exactly where the ridge stroke ends, so
+    // the two strokes join without a visible blob at the tip.
+    waterline[0] = mountainFar[mountainFar.length - 1];
+
     return {
-      mountainFar: wobble(toPixels(MOUNTAIN_FAR_RIDGE, w, h), rng, 6),
+      mountainFar: mountainFar,
       mountainNear: wobble(toPixels(MOUNTAIN_NEAR_RIDGE, w, h), rng, 6),
-      ripples: RIPPLES.map(line => wobble(toPixels(line, w, h), rng, 4)),
-      shore: wobble(toPixels(SHORE_LINE, w, h), rng, 6),
+      waterline: waterline,
+      horizon: wobble(toPixels(HORIZON, w, h), rng, 4),
+      // The shoreline reuses the waterline's wobbled coordinates so
+      // the sand fill and the stroke share an identical boundary.
+      shore: waterline.slice(MOUNTAIN_FOOT.length),
+      sandTop: wobble(toPixels(SAND_TOP, w, h), rng, 5),
+      ripples: RIPPLES.map(line => wobble(toPixels(line, w, h), rng, 5)),
       oceanTopY: OCEAN_TOP * h,
-      mountainBaseY: MOUNTAIN_BASE * h
+      mountainNearBaseY: MOUNTAIN_NEAR_BASE * h,
+      sandOverlap: SAND_OVERLAP * h
     };
   }
 
@@ -148,45 +195,47 @@
     ctx.fillRect(0, 0, w, h);
   }
 
-  // Draws one mountain ridge: a filled silhouette with a stroked
-  // ridge line on top (the base is left unstroked since the ocean
-  // will cover it).
-  function drawMountain(ctx, ridge, fillColor, w, baseY) {
-    const first = ridge[0];
-    const last = ridge[ridge.length - 1];
-
-    // Filled silhouette (ridge + straight drop to a hidden baseline)
-    ctx.beginPath();
-    tracePath(ctx, ridge);
-    ctx.lineTo(last[0], baseY);
-    ctx.lineTo(first[0], baseY);
-    ctx.closePath();
-    ctx.fillStyle = fillColor;
-    ctx.fill();
-
-    // Hand-drawn outline along just the ridge
-    ctx.beginPath();
-    tracePath(ctx, ridge);
+  function strokeOutline(ctx, width) {
     ctx.strokeStyle = PALETTE.outline;
-    ctx.lineWidth = STROKE.thick;
+    ctx.lineWidth = width;
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
     ctx.stroke();
   }
 
-  function drawMountains(ctx, scene, w) {
-    drawMountain(ctx, scene.mountainFar, PALETTE.mountainFar, w, scene.mountainBaseY);
-    drawMountain(ctx, scene.mountainNear, PALETTE.mountainNear, w, scene.mountainBaseY);
+  // The distant range: a filled silhouette dropping to a baseline
+  // hidden behind the sea, with a stroked ridge line on top.
+  function drawMountainNear(ctx, scene) {
+    const ridge = scene.mountainNear;
+    const first = ridge[0];
+    const last = ridge[ridge.length - 1];
+
+    ctx.beginPath();
+    tracePath(ctx, ridge);
+    ctx.lineTo(last[0], scene.mountainNearBaseY);
+    ctx.lineTo(first[0], scene.mountainNearBaseY);
+    ctx.closePath();
+    ctx.fillStyle = PALETTE.mountainNear;
+    ctx.fill();
+
+    ctx.beginPath();
+    tracePath(ctx, ridge);
+    strokeOutline(ctx, STROKE.thick);
   }
 
-  // Ocean fill plus a few soft ripple lines.
+  // Sea fill plus its top-edge line and bold sweeping wave lines.
   function drawOcean(ctx, scene, w, h) {
     ctx.fillStyle = PALETTE.ocean;
     ctx.fillRect(0, scene.oceanTopY, w, h - scene.oceanTopY);
 
-    ctx.strokeStyle = PALETTE.ripple;
-    ctx.lineWidth = STROKE.thin;
+    ctx.strokeStyle = PALETTE.outline;
+    ctx.lineWidth = STROKE.wave;
     ctx.lineCap = 'round';
+
+    ctx.beginPath();
+    tracePath(ctx, scene.horizon);
+    ctx.stroke();
+
     scene.ripples.forEach(line => {
       ctx.beginPath();
       tracePath(ctx, line);
@@ -194,41 +243,76 @@
     });
   }
 
-  // Sand fill bounded on its right by the wavy shoreline, with a
-  // thick outline tracing that shoreline. The sand occupies the
-  // left side of the canvas, from the shoreline to the left edge.
-  function drawSand(ctx, scene, w, h) {
+  // The big headland: its closed silhouette runs over the ridge,
+  // down the waterline at its foot, then back along the sand's top
+  // edge (pushed down slightly so the sand fill overlaps it and no
+  // seam shows). Only the ridge is stroked.
+  function drawMountainFar(ctx, scene) {
+    const ridge = scene.mountainFar;
+    const foot = scene.waterline.slice(0, MOUNTAIN_FOOT.length + 1);
+
+    ctx.beginPath();
+    tracePath(ctx, ridge);
+    tracePath(ctx, foot, true);
+    // Sand top, right to left, tucked under the future sand fill
+    for (const [x, y] of scene.sandTop) {
+      ctx.lineTo(x, y + scene.sandOverlap);
+    }
+    ctx.closePath();
+    ctx.fillStyle = PALETTE.mountainFar;
+    ctx.fill();
+
+    ctx.beginPath();
+    tracePath(ctx, ridge);
+    strokeOutline(ctx, STROKE.thick);
+  }
+
+  // Sand fill on the left: bounded by the shoreline on the right and
+  // its soft top edge against the headland. Unstroked here — the
+  // waterline stroke is drawn on top afterwards.
+  function drawSand(ctx, scene, h) {
     const shore = scene.shore;
-    const first = shore[0];
+    const sandTop = scene.sandTop;
+    const topLeft = sandTop[sandTop.length - 1];
 
     ctx.beginPath();
     tracePath(ctx, shore);
     ctx.lineTo(0, h);
-    ctx.lineTo(0, first[1]);
+    ctx.lineTo(topLeft[0], topLeft[1]);
+    // Sand top, left to right, back up to the shoreline start
+    for (let i = sandTop.length - 2; i >= 0; i--) {
+      ctx.lineTo(sandTop[i][0], sandTop[i][1]);
+    }
     ctx.closePath();
     ctx.fillStyle = PALETTE.sand;
     ctx.fill();
+  }
 
+  // One continuous bold stroke from the headland's foot down along
+  // the shoreline — the line that defines the whole coast.
+  function drawWaterline(ctx, scene) {
     ctx.beginPath();
-    tracePath(ctx, shore);
-    ctx.strokeStyle = PALETTE.outline;
-    ctx.lineWidth = STROKE.thick;
-    ctx.lineJoin = 'round';
-    ctx.lineCap = 'round';
-    ctx.stroke();
+    tracePath(ctx, scene.waterline);
+    strokeOutline(ctx, STROKE.thick);
   }
 
   // -----------------------------------------------------------
   // Render & game loop
   // -----------------------------------------------------------
+
+  // Layer order matters: the distant range sits behind the sea, the
+  // headland sits in front of it, the sand covers the headland's
+  // lower-left base, and the waterline stroke goes on top of it all.
   function render() {
     const w = canvas.width;
     const h = canvas.height;
 
     drawSky(ctx, w, h);
-    drawMountains(ctx, scene, w);
+    drawMountainNear(ctx, scene);
     drawOcean(ctx, scene, w, h);
-    drawSand(ctx, scene, w, h);
+    drawMountainFar(ctx, scene);
+    drawSand(ctx, scene, h);
+    drawWaterline(ctx, scene);
   }
 
   function update() {
