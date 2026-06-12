@@ -2,9 +2,10 @@
 // Quiet Shore — a calm, minimalist beach scene
 // =============================================================
 // This file sets up a full-screen canvas, a basic game loop, and
-// draws a static pastel background as a side view looking down the
+// draws a pastel background as a side view looking down the
 // coast: sand on the left, sea on the right, a big headland rising
-// from the beach, and a low mountain range across the water.
+// from the beach, and a low mountain range across the water. The
+// sea's wave lines drift slowly toward the shore and back out again.
 // Lines are drawn with a hand-drawn "wobble" so the scene feels
 // soft and imperfect rather than mechanically precise.
 //
@@ -33,6 +34,18 @@
     thick: 5,    // shoreline, mountain ridges
     wave: 4,     // bold sweeping wave lines on the sea
     texture: 2.5 // subtle contour marks on the mountain faces
+  };
+
+  // Slow, rhythmic motion for the ripple lines: each one drifts a
+  // little toward the shore and back out to sea, with the lines
+  // behind it following after a short delay so the waves appear to
+  // lap in sequence. `dir` points from open water toward the sand,
+  // matching the ripples' diagonal layout.
+  const WAVE = {
+    period: 6,         // seconds for one full lap-and-recede cycle
+    amplitude: 14,     // how far a ripple drifts along `dir`, in design px
+    phaseStep: 0.55,   // phase delay between successive ripple lines
+    dir: [-0.997, -0.078]
   };
 
   // The scene is laid out once in a fixed "design space" and then
@@ -71,6 +84,11 @@
     cx: DESIGN.anchorX * DESIGN.w,
     cy: DESIGN.anchorY * DESIGN.h
   };
+
+  // Animation clock, advanced each frame by the real elapsed time so
+  // the wave motion stays consistent regardless of frame rate.
+  let elapsed = 0;
+  let lastTimestamp = null;
 
   // -----------------------------------------------------------
   // Small helpers
@@ -321,7 +339,13 @@
     drawTexture(ctx, scene.nearTexture);
   }
 
-  // Sea fill plus its top-edge line and bold sweeping wave lines.
+  // Sea fill plus its top-edge line and bold sweeping wave lines. The
+  // ripple lines drift slowly toward the shore and back out again,
+  // each lagging a little behind the one before it, so they read as
+  // overlapping waves lapping at the beach in a slow, steady rhythm.
+  // The line nearest the shore (index 0) slides under the sand at the
+  // peak of its cycle — that moment is a readable "beat" a future
+  // timing mechanic can key off.
   function drawOcean(ctx, scene, w, h) {
     ctx.fillStyle = PALETTE.ocean;
     ctx.fillRect(
@@ -337,10 +361,15 @@
     tracePath(ctx, scene.horizon);
     ctx.stroke();
 
-    scene.ripples.forEach(line => {
+    scene.ripples.forEach((line, i) => {
+      const phase = elapsed * (2 * Math.PI / WAVE.period) - i * WAVE.phaseStep;
+      const reach = Math.sin(phase) * WAVE.amplitude;
+      ctx.save();
+      ctx.translate(WAVE.dir[0] * reach, WAVE.dir[1] * reach);
       ctx.beginPath();
       tracePath(ctx, line);
       ctx.stroke();
+      ctx.restore();
     });
   }
 
@@ -536,14 +565,15 @@
     drawWaterline(ctx, scene);
   }
 
-  function update() {
-    // Currently nothing animates — the scene is static. This is
-    // where future gentle motion (drifting clouds, birds, etc.)
-    // would be updated each frame.
+  function update(timestamp) {
+    if (lastTimestamp !== null) {
+      elapsed += (timestamp - lastTimestamp) / 1000;
+    }
+    lastTimestamp = timestamp;
   }
 
-  function loop() {
-    update();
+  function loop(timestamp) {
+    update(timestamp);
     render();
     requestAnimationFrame(loop);
   }
