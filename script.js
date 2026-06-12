@@ -102,20 +102,25 @@
     [0.84, 0.38], [0.95, 0.30], [1.00, 0.40]
   ];
 
-  // Gentle ripple lines drawn across the ocean.
+  // Gentle ripple lines drawn across the ocean. These run the full
+  // width of the canvas but get covered on the left by the sand
+  // shape below, so they only end up visible over the water.
   const RIPPLES = [
-    [[0.00, 0.50], [0.20, 0.49], [0.40, 0.51], [0.60, 0.49], [0.80, 0.51], [1.00, 0.50]],
-    [[0.00, 0.58], [0.25, 0.57], [0.50, 0.59], [0.75, 0.57], [1.00, 0.58]],
-    [[0.00, 0.66], [0.20, 0.655], [0.45, 0.67], [0.70, 0.655], [1.00, 0.665]]
+    [[0.00, 0.46], [0.25, 0.45], [0.50, 0.47], [0.75, 0.45], [1.00, 0.46]],
+    [[0.00, 0.55], [0.22, 0.54], [0.48, 0.565], [0.74, 0.55], [1.00, 0.555]],
+    [[0.00, 0.65], [0.20, 0.645], [0.45, 0.665], [0.70, 0.65], [1.00, 0.66]],
+    [[0.00, 0.76], [0.25, 0.755], [0.50, 0.775], [0.75, 0.76], [1.00, 0.77]],
+    [[0.00, 0.88], [0.25, 0.875], [0.50, 0.89], [0.75, 0.88], [1.00, 0.885]]
   ];
 
-  // Wavy shoreline separating the ocean from the sand.
+  // Wavy shoreline separating the sand (left) from the ocean (right),
+  // running roughly top-to-bottom so the beach reads as a side view
+  // looking down the coast.
   const SHORE_LINE = [
-    [0.00, 0.74], [0.15, 0.69], [0.32, 0.76], [0.50, 0.70],
-    [0.68, 0.77], [0.85, 0.71], [1.00, 0.75]
+    [0.34, 0.40], [0.24, 0.52], [0.33, 0.64], [0.19, 0.77], [0.27, 0.90], [0.15, 1.00]
   ];
 
-  const OCEAN_TOP = 0.44; // where the ocean rectangle begins (fraction of height)
+  const OCEAN_TOP = 0.40; // where the ocean rectangle begins (fraction of height)
   const MOUNTAIN_BASE = 0.55; // how far down the mountain fill extends (hidden behind ocean)
 
   // -----------------------------------------------------------
@@ -189,15 +194,17 @@
     });
   }
 
-  // Sand fill bounded above by the wavy shoreline, with a thick
-  // outline tracing that shoreline.
+  // Sand fill bounded on its right by the wavy shoreline, with a
+  // thick outline tracing that shoreline. The sand occupies the
+  // left side of the canvas, from the shoreline to the left edge.
   function drawSand(ctx, scene, w, h) {
     const shore = scene.shore;
+    const first = shore[0];
 
     ctx.beginPath();
     tracePath(ctx, shore);
-    ctx.lineTo(w, h);
     ctx.lineTo(0, h);
+    ctx.lineTo(0, first[1]);
     ctx.closePath();
     ctx.fillStyle = PALETTE.sand;
     ctx.fill();
