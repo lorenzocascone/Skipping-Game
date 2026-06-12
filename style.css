@@ -1,0 +1,22 @@
+/* Reset spacing and prevent scrollbars so the canvas fills the viewport */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  /* Pale cream fallback in case the canvas hasn't painted yet */
+  background-color: #fbf5ee;
+}
+
+/* The canvas fills the entire window with no inline gaps */
+#scene {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+}
