@@ -26,6 +26,7 @@
     mountainNear: '#bcccec',
     ocean: '#bfe3ec',
     sand: '#f8dcc8',
+    stone: '#cdc3b8',
     outline: '#2e3a56',
     texture: 'rgba(46, 58, 86, 0.55)'
   };
@@ -84,6 +85,19 @@
     speed: 220      // movement speed, design px/sec
   };
 
+  // Direction pointing from the shore out toward open sea — the
+  // opposite of the ripples' shoreward drift — and the limits for
+  // the stone-throwing aim/power interaction.
+  const SEA_DIR = [-WAVE.dir[0], -WAVE.dir[1]];
+  const AIM = {
+    maxAngle: Math.PI * 0.4, // how far the aim can swing from straight out to sea
+    lineLength: 110,
+    barWidth: 70,
+    barHeight: 10,
+    power: { period: 1.6 } // seconds for one empty-full-empty loop
+  };
+  const STONE_COUNT_RANGE = [3, 4];
+
   // -----------------------------------------------------------
   // Canvas setup
   // -----------------------------------------------------------
@@ -120,7 +134,21 @@
     facing: 1,
     moving: false,
     walkCycle: 0,
-    swingIntensity: 0
+    swingIntensity: 0,
+    stoneCount: 0
+  };
+
+  // Aiming/throwing state: while the player holds a stone and holds
+  // down the pointer, an aiming line and power bar appear. `dirX/dirY`
+  // is a unit vector clamped to a cone around SEA_DIR, and `power`
+  // loops smoothly between 0 and 1 for as long as the pointer is held.
+  const aiming = {
+    pointerId: null,
+    active: false,
+    dirX: SEA_DIR[0],
+    dirY: SEA_DIR[1],
+    holdTime: 0,
+    power: 0
   };
 
   // Keyboard movement: WASD and arrow keys.
@@ -193,6 +221,19 @@
 
   function clamp(value, min, max) {
     return Math.min(Math.max(value, min), max);
+  }
+
+  // Axis-aligned bounding box of a polygon, used to pick random
+  // points that are likely to land inside it.
+  function polygonBounds(poly) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    poly.forEach(([x, y]) => {
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    });
+    return { minX, minY, maxX, maxY };
   }
 
   // Ray-casting point-in-polygon test, used to keep the player on
@@ -669,6 +710,8 @@
     ctx.lineWidth = STROKE.texture;
     ctx.stroke();
 
+    drawHeldStones(ctx, p);
+
     ctx.restore();
   }
 
@@ -693,11 +736,212 @@
   }
 
   // -----------------------------------------------------------
+  // Stones: scattered on the sand, picked up automatically on
+  // contact, then thrown with the aiming/power interaction below.
+  // -----------------------------------------------------------
+
+  let stones = [];
+
+  // Scatters a handful of small stones at random points on the sand,
+  // away from the player's starting position.
+  function spawnStones() {
+    const bounds = polygonBounds(scene.sandPolygon);
+    const count = STONE_COUNT_RANGE[0] +
+      Math.floor(Math.random() * (STONE_COUNT_RANGE[1] - STONE_COUNT_RANGE[0] + 1));
+    const list = [];
+    let attempts = 0;
+    while (list.length < count && attempts < 500) {
+      attempts++;
+      const x = bounds.minX + Math.random() * (bounds.maxX - bounds.minX);
+      const y = bounds.minY + Math.random() * (bounds.maxY - bounds.minY);
+      if (!pointInSand(x, y)) continue;
+      if (Math.hypot(x - player.x, y - player.y) < 60) continue;
+      list.push({
+        x, y,
+        rx: 7 + Math.random() * 5,
+        ry: 5 + Math.random() * 3,
+        rot: Math.random() * Math.PI,
+        collected: false
+      });
+    }
+    return list;
+  }
+
+  // Picks up any stone the player is standing on.
+  function updateStones() {
+    const pickupRadius = 26;
+    stones.forEach(stone => {
+      if (stone.collected) return;
+      const d = Math.hypot(stone.x - player.x, stone.y - player.y);
+      if (d < pickupRadius) {
+        stone.collected = true;
+        player.stoneCount++;
+      }
+    });
+  }
+
+  // Draws the stones still lying on the sand as small wobble-stroked
+  // pebbles, filled with a soft neutral tone.
+  function drawStones(ctx, stones) {
+    stones.forEach(stone => {
+      if (stone.collected) return;
+      ctx.save();
+      ctx.translate(stone.x, stone.y);
+      ctx.rotate(stone.rot);
+      ctx.beginPath();
+      ctx.ellipse(0, 0, stone.rx, stone.ry, 0, 0, Math.PI * 2);
+      ctx.fillStyle = PALETTE.stone;
+      ctx.fill();
+      ctx.strokeStyle = PALETTE.outline;
+      ctx.lineWidth = STROKE.texture;
+      ctx.stroke();
+      ctx.restore();
+    });
+  }
+
+  // Draws a small stack of held stones near the player's hand. Called
+  // from drawPlayer, inside its translated/local coordinate space.
+  function drawHeldStones(ctx, p) {
+    if (p.stoneCount <= 0) return;
+    const baseX = p.facing * 16;
+    const baseY = -6;
+    for (let i = 0; i < p.stoneCount; i++) {
+      ctx.save();
+      ctx.translate(baseX, baseY - i * 6);
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 6, 4, 0, 0, Math.PI * 2);
+      ctx.fillStyle = PALETTE.stone;
+      ctx.fill();
+      ctx.strokeStyle = PALETTE.outline;
+      ctx.lineWidth = STROKE.texture;
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  // -----------------------------------------------------------
+  // Aiming & throwing: hold the pointer down while carrying a stone
+  // to show an aiming line (clamped toward the sea) and a power bar
+  // that loops smoothly between empty and full.
+  // -----------------------------------------------------------
+
+  // Points the aim toward the given screen position, clamped to a
+  // cone around the seaward direction so the throw always heads
+  // roughly out to sea.
+  function updateAimDirection(clientX, clientY) {
+    const [tx, ty] = screenToDesign(clientX, clientY);
+    let dx = tx - player.x;
+    let dy = ty - player.y;
+    const mag = Math.hypot(dx, dy) || 1;
+    dx /= mag;
+    dy /= mag;
+
+    const seaAngle = Math.atan2(SEA_DIR[1], SEA_DIR[0]);
+    let angle = Math.atan2(dy, dx);
+    let diff = angle - seaAngle;
+    diff = Math.atan2(Math.sin(diff), Math.cos(diff)); // normalize to [-PI, PI]
+    diff = clamp(diff, -AIM.maxAngle, AIM.maxAngle);
+    angle = seaAngle + diff;
+
+    aiming.dirX = Math.cos(angle);
+    aiming.dirY = Math.sin(angle);
+  }
+
+  // Advances the power bar's smooth empty-full-empty loop while the
+  // pointer is held down.
+  function updateAiming(dt) {
+    if (!aiming.active) return;
+    aiming.holdTime += dt;
+    const phase = (aiming.holdTime / AIM.power.period) * Math.PI * 2;
+    aiming.power = (1 - Math.cos(phase)) / 2;
+  }
+
+  // A rounded-rectangle path, used for the minimalist power bar.
+  function roundedRectPath(ctx, x, y, w, h, r) {
+    const rr = Math.min(r, h / 2, Math.abs(w) / 2 || 0);
+    ctx.beginPath();
+    if (w <= 0) {
+      ctx.rect(x, y, 0, h);
+      return;
+    }
+    ctx.moveTo(x + rr, y);
+    ctx.lineTo(x + w - rr, y);
+    ctx.arcTo(x + w, y, x + w, y + rr, rr);
+    ctx.lineTo(x + w, y + h - rr);
+    ctx.arcTo(x + w, y + h, x + w - rr, y + h, rr);
+    ctx.lineTo(x + rr, y + h);
+    ctx.arcTo(x, y + h, x, y + h - rr, rr);
+    ctx.lineTo(x, y + rr);
+    ctx.arcTo(x, y, x + rr, y, rr);
+    ctx.closePath();
+  }
+
+  // Draws the aiming line and power bar while the player is aiming a
+  // throw. Kept light and sketchy — a dashed line and a thin outlined
+  // bar — to match the rest of the line-art style.
+  function drawAiming(ctx, p, aim) {
+    if (!aim.active) return;
+
+    const startX = p.x;
+    const startY = p.y - PLAYER_SHAPE.legLen - PLAYER_SHAPE.torsoLen * 0.5;
+    const endX = startX + aim.dirX * AIM.lineLength;
+    const endY = startY + aim.dirY * AIM.lineLength;
+
+    // Aiming line: a soft dashed stroke with a small dot at the tip.
+    ctx.save();
+    ctx.strokeStyle = 'rgba(46, 58, 86, 0.45)';
+    ctx.lineWidth = STROKE.texture;
+    ctx.setLineDash([6, 8]);
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(startX, startY);
+    ctx.lineTo(endX, endY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.beginPath();
+    ctx.arc(endX, endY, 3.5, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(46, 58, 86, 0.45)';
+    ctx.fill();
+    ctx.restore();
+
+    // Power bar: a small outlined capsule above the player's head that
+    // fills according to the current power level.
+    const barW = AIM.barWidth;
+    const barH = AIM.barHeight;
+    const barX = p.x - barW / 2;
+    const barY = startY - PLAYER_SHAPE.headR * 2 - 26;
+
+    ctx.save();
+    roundedRectPath(ctx, barX, barY, barW, barH, barH / 2);
+    ctx.strokeStyle = 'rgba(46, 58, 86, 0.5)';
+    ctx.lineWidth = STROKE.texture;
+    ctx.stroke();
+
+    const fillW = barW * aim.power;
+    if (fillW > 0) {
+      roundedRectPath(ctx, barX, barY, fillW, barH, barH / 2);
+      ctx.fillStyle = 'rgba(46, 58, 86, 0.3)';
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // -----------------------------------------------------------
   // Camera: pan & zoom
   // -----------------------------------------------------------
 
   function currentScale() {
     return baseScale * cam.zoom;
+  }
+
+  // Converts screen (client) coordinates into design-space coordinates,
+  // inverting the scale/pan applied when rendering.
+  function screenToDesign(sx, sy) {
+    const scale = currentScale();
+    const ox = canvas.width / 2 - cam.cx * scale;
+    const oy = canvas.height / 2 - cam.cy * scale;
+    return [(sx - ox) / scale, (sy - oy) / scale];
   }
 
   // Keep the visible window inside the painted area (design rect
@@ -752,6 +996,19 @@
         return;
       }
     }
+
+    // Holding a stone and pressing elsewhere starts an aim/throw,
+    // rather than panning the camera.
+    if (player.stoneCount > 0 && aiming.pointerId === null && pointers.size === 0) {
+      canvas.setPointerCapture(e.pointerId);
+      aiming.pointerId = e.pointerId;
+      aiming.active = true;
+      aiming.holdTime = 0;
+      aiming.power = 0;
+      updateAimDirection(e.clientX, e.clientY);
+      return;
+    }
+
     canvas.setPointerCapture(e.pointerId);
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   });
@@ -759,6 +1016,11 @@
   canvas.addEventListener('pointermove', e => {
     if (e.pointerId === joystick.pointerId) {
       updateJoystickVector(e.clientX, e.clientY);
+      return;
+    }
+
+    if (e.pointerId === aiming.pointerId) {
+      updateAimDirection(e.clientX, e.clientY);
       return;
     }
 
@@ -800,6 +1062,13 @@
       joystick.knobY = 0;
       return;
     }
+    if (e.pointerId === aiming.pointerId) {
+      aiming.pointerId = null;
+      aiming.active = false;
+      aiming.holdTime = 0;
+      aiming.power = 0;
+      return;
+    }
     pointers.delete(e.pointerId);
   }
   canvas.addEventListener('pointerup', releasePointer);
@@ -834,7 +1103,9 @@
     drawMountainFar(ctx, scene);
     drawSand(ctx, scene, h);
     drawWaterline(ctx, scene);
+    drawStones(ctx, stones);
     drawPlayer(ctx, player);
+    drawAiming(ctx, player, aiming);
 
     drawJoystick(ctx);
   }
@@ -847,6 +1118,8 @@
     }
     lastTimestamp = timestamp;
     updatePlayer(dt);
+    updateStones();
+    updateAiming(dt);
   }
 
   function loop(timestamp) {
@@ -870,6 +1143,7 @@
 
   // Kick everything off
   scene = buildScene(DESIGN.w, DESIGN.h);
+  stones = spawnStones();
   resize();
   requestAnimationFrame(loop);
 })();
