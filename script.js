@@ -57,10 +57,10 @@
   // The margins are extra painted area around the design rectangle
   // so panning/zooming out never reveals blank canvas.
   const DESIGN = {
-    w: 1600,
+    w: 1400,
     h: 750,
-    anchorX: 0.36,    // initial view centred near the shoreline...
-    anchorY: 0.575,   // ...and slightly toward the water
+    anchorX: 0.40,    // initial view centred near the shoreline...
+    anchorY: 0.64,    // ...and toward the water, trimming empty sky
     marginX: 360,
     marginTop: 300,
     marginBottom: 167,
@@ -413,7 +413,11 @@
     [[0.52, 0.56], [0.42, 0.64], [0.47, 0.73], [0.34, 0.84], [0.39, 0.93], [0.26, 1.04], [0.32, 1.13], [0.24, 1.20]],
     [[0.62, 0.60], [0.54, 0.68], [0.58, 0.76], [0.47, 0.86], [0.51, 0.94], [0.40, 1.04], [0.46, 1.13], [0.38, 1.20]],
     [[0.74, 0.62], [0.66, 0.70], [0.70, 0.78], [0.60, 0.88], [0.64, 0.96], [0.55, 1.06], [0.60, 1.14], [0.53, 1.20]],
-    [[0.88, 0.64], [0.80, 0.72], [0.84, 0.80], [0.76, 0.90], [0.79, 1.00], [0.74, 1.10], [0.78, 1.20]]
+    [[0.88, 0.64], [0.80, 0.72], [0.84, 0.80], [0.76, 0.90], [0.79, 1.00], [0.74, 1.10], [0.78, 1.20]],
+    // A fifth crest furthest from shore, riding right along the
+    // horizon so the wave pattern reads as continuing out to sea
+    // instead of stopping in a band of empty water.
+    [[0.87, 0.50], [0.77, 0.58], [0.82, 0.67], [0.69, 0.78], [0.74, 0.87], [0.61, 0.98], [0.67, 1.07], [0.59, 1.14]]
   ];
 
   const OCEAN_TOP = 0.50;          // where the sea begins (fraction of height)
@@ -1145,7 +1149,8 @@
 
     spawnSplash(t.x, t.y, t.power);
 
-    const angleFactor = t.speed / Math.hypot(t.speed, Math.abs(t.vHeight));
+    const incomingVHeight = Math.abs(t.vHeight);
+    const angleFactor = t.speed / Math.hypot(t.speed, incomingVHeight);
     const waveVal = waveSurfaceAt(t.x, t.y, elapsed);
     const waveFactor = (1 - waveVal) / 2;
     const bounceFactor = clamp(
@@ -1160,7 +1165,10 @@
     t.skips += 1;
     if (t.skips > bestSkips) bestSkips = t.skips;
     t.speed *= 0.45 + bounceFactor * 0.3;
-    t.vHeight = Math.max(60, t.speed * (0.35 + bounceFactor * 0.25));
+    const naturalVHeight = t.speed * (0.35 + bounceFactor * 0.25);
+    // Each hop rises less than the last, so the stone loses momentum
+    // and covers noticeably less ground with every subsequent skip.
+    t.vHeight = Math.max(40, Math.min(naturalVHeight, incomingVHeight * 0.8));
     t.popupText += (t.popupText ? ' ' : '') + t.skips + '...';
     t.popupX = t.x;
     t.popupY = t.y;
