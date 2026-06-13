@@ -59,8 +59,8 @@
   const DESIGN = {
     w: 1400,
     h: 750,
-    anchorX: 0.40,    // initial view centred near the shoreline...
-    anchorY: 0.64,    // ...and toward the water, trimming empty sky
+    anchorX: 0.44,    // initial view centred near the shoreline...
+    anchorY: 0.60,    // ...and toward the water, with headroom above the mountain
     marginX: 360,
     marginTop: 300,
     marginBottom: 167,
