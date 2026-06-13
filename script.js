@@ -59,13 +59,13 @@
   const DESIGN = {
     w: 1400,
     h: 750,
-    anchorX: 0.44,    // initial view centred near the shoreline...
-    anchorY: 0.60,    // ...and toward the water, with headroom above the mountain
+    anchorX: 0.506,   // initial view centred near the shoreline...
+    anchorY: 0.523,   // ...and toward the water, with headroom above the mountain
     marginX: 360,
     marginTop: 300,
     marginBottom: 167,
-    defaultZoom: 1.15 // starts zoomed in a bit, cropping out excess
-                      // sand/sky so the action fills the frame
+    defaultZoom: 0.9775 // zoomed out ~15% from the tighter crop, while
+                        // keeping the left and bottom view edges in place
   };
 
   // Whether this device supports touch — used to show the on-screen
