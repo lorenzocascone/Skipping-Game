@@ -58,12 +58,12 @@
   // so panning/zooming out never reveals blank canvas.
   const DESIGN = {
     w: 1600,
-    h: 900,
+    h: 750,
     anchorX: 0.36,    // initial view centred near the shoreline...
     anchorY: 0.55,    // ...and slightly toward the water
     marginX: 360,
-    marginTop: 360,
-    marginBottom: 200
+    marginTop: 300,
+    marginBottom: 167
   };
 
   // How far the player can zoom relative to the base "cover" scale.
@@ -199,13 +199,14 @@
     keys.delete(e.key.toLowerCase());
   });
 
-  // On-screen joystick for touch movement: a translucent circle in
-  // the bottom-left corner. `dx`/`dy` stay in [-1, 1] and scale the
-  // player's speed by how far the knob is dragged from centre.
+  // On-screen joystick for touch movement: a small outlined ring in
+  // the bottom-left corner, matching the rest of the line-art style.
+  // `dx`/`dy` stay in [-1, 1] and scale the player's speed by how far
+  // the knob is dragged from centre.
   const joystick = {
     pointerId: null,
     active: false,
-    radius: 60,
+    radius: 42,
     baseX: 0,
     baseY: 0,
     knobX: 0,
@@ -215,8 +216,8 @@
   };
 
   function updateJoystickBase() {
-    joystick.baseX = joystick.radius + 30;
-    joystick.baseY = canvas.height - joystick.radius - 30;
+    joystick.baseX = joystick.radius + 24;
+    joystick.baseY = canvas.height - joystick.radius - 24;
   }
 
   function updateJoystickVector(clientX, clientY) {
@@ -795,18 +796,26 @@
     if (!TOUCH_ENABLED) return;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
 
+    // Outer ring: a thin outlined circle with a faint fill, sized to
+    // read as a small, clean control rather than a large translucent
+    // blob.
     ctx.beginPath();
     ctx.arc(joystick.baseX, joystick.baseY, joystick.radius, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(46, 58, 86, 0.12)';
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
     ctx.fill();
-    ctx.strokeStyle = 'rgba(46, 58, 86, 0.35)';
+    ctx.strokeStyle = 'rgba(46, 58, 86, 0.4)';
     ctx.lineWidth = 2;
     ctx.stroke();
 
+    // Knob: a smaller filled-and-outlined circle that slides toward
+    // the drag direction.
     ctx.beginPath();
-    ctx.arc(joystick.baseX + joystick.knobX, joystick.baseY + joystick.knobY, joystick.radius * 0.45, 0, Math.PI * 2);
-    ctx.fillStyle = joystick.active ? 'rgba(46, 58, 86, 0.35)' : 'rgba(46, 58, 86, 0.2)';
+    ctx.arc(joystick.baseX + joystick.knobX, joystick.baseY + joystick.knobY, joystick.radius * 0.4, 0, Math.PI * 2);
+    ctx.fillStyle = joystick.active ? 'rgba(46, 58, 86, 0.35)' : 'rgba(46, 58, 86, 0.18)';
     ctx.fill();
+    ctx.strokeStyle = 'rgba(46, 58, 86, 0.4)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
   }
 
   // -----------------------------------------------------------
