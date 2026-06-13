@@ -60,10 +60,12 @@
     w: 1600,
     h: 750,
     anchorX: 0.36,    // initial view centred near the shoreline...
-    anchorY: 0.55,    // ...and slightly toward the water
+    anchorY: 0.575,   // ...and slightly toward the water
     marginX: 360,
     marginTop: 300,
-    marginBottom: 167
+    marginBottom: 167,
+    defaultZoom: 1.15 // starts zoomed in a bit, cropping out excess
+                      // sand/sky so the action fills the frame
   };
 
   // How far the player can zoom relative to the base "cover" scale.
@@ -110,8 +112,8 @@
   // cleanest skip.
   const GRAVITY = 1100; // pulls the stone's height back down, design px/sec^2
   const THROW = {
-    speedMin: 260, speedMax: 560, // forward speed at release, design px/sec
-    liftMin: 90, liftMax: 230,    // initial upward speed at release, design px/sec
+    speedMin: 300, speedMax: 820, // forward speed at release, design px/sec
+    liftMin: 100, liftMax: 270,   // initial upward speed at release, design px/sec
     waveSpatialFreq: 0.0026,      // how quickly the lapping phase shifts with distance out to sea
     popupHold: 0.5,               // seconds a skip count stays fully visible
     popupFade: 0.9,               // seconds it then takes to fade away
@@ -120,10 +122,13 @@
   };
 
   // A brief radiating-lines splash where a thrown stone meets the water.
+  // Harder throws kick up a bigger, busier splash for extra impact.
   const SPLASH = {
-    life: 0.45,   // seconds the splash takes to grow and fade
-    lines: 5,     // number of radiating lines
-    length: 14    // how far the lines reach at full growth, design px
+    life: 0.45,    // seconds the splash takes to grow and fade
+    lines: 5,      // number of radiating lines at minimum power
+    maxLines: 9,   // number of radiating lines at full power
+    length: 14,    // how far the lines reach at full growth, design px (min power)
+    maxLength: 30  // how far the lines reach at full growth, design px (full power)
   };
 
   // How long a freshly washed-up stone takes to fade fully into view,
@@ -145,7 +150,7 @@
   // point in design coordinates. baseScale is recomputed on resize.
   let baseScale = 1;
   const cam = {
-    zoom: 1,
+    zoom: DESIGN.defaultZoom,
     cx: DESIGN.anchorX * DESIGN.w,
     cy: DESIGN.anchorY * DESIGN.h
   };
@@ -1115,14 +1120,17 @@
     });
   }
 
-  // Spawns a brief radiating-lines splash at a water impact point.
-  function spawnSplash(x, y) {
-    const n = SPLASH.lines;
+  // Spawns a brief radiating-lines splash at a water impact point. A
+  // harder throw (higher power) kicks up more lines reaching further,
+  // for a punchier splash on big hits.
+  function spawnSplash(x, y, power) {
+    const n = Math.round(SPLASH.lines + power * (SPLASH.maxLines - SPLASH.lines));
+    const length = SPLASH.length + power * (SPLASH.maxLength - SPLASH.length);
     const angles = [];
     for (let i = 0; i < n; i++) {
       angles.push(-Math.PI / 2 + (i - (n - 1) / 2) * 0.35 + (Math.random() - 0.5) * 0.15);
     }
-    splashes.push({ x, y, age: 0, angles });
+    splashes.push({ x, y, age: 0, angles, length });
   }
 
   // Decides what happens when the stone reaches the water (or sand)
@@ -1135,7 +1143,7 @@
       return;
     }
 
-    spawnSplash(t.x, t.y);
+    spawnSplash(t.x, t.y, t.power);
 
     const angleFactor = t.speed / Math.hypot(t.speed, Math.abs(t.vHeight));
     const waveVal = waveSurfaceAt(t.x, t.y, elapsed);
@@ -1291,7 +1299,7 @@
     splashes.forEach(s => {
       const f = s.age / SPLASH.life;
       const alpha = clamp(1 - f, 0, 1) * 0.8;
-      const len = SPLASH.length * (0.4 + 0.6 * f);
+      const len = s.length * (0.4 + 0.6 * f);
       ctx.save();
       ctx.globalAlpha = alpha;
       ctx.strokeStyle = '#ffffff';
