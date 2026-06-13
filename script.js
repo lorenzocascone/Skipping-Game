@@ -650,28 +650,29 @@
     strokeOutline(ctx, STROKE.thick);
   }
 
-  // As the shore-hugging wave pulls back from its high-water mark, a
-  // scalloped white foam line lingers on the wet sand it just covered —
-  // visible only while the wave is receded, fading back out as it
-  // returns. Drawn after the sand fill so it reads as sitting on top
-  // of the beach rather than getting painted over.
+  // As the shore-hugging wave pulls back from its high-water mark, the
+  // strip of sand it would otherwise cover is left exposed — filled
+  // solid white to read as a foam-soaked stretch of wet sand. The
+  // strip runs from the wave's current edge out to its peak-surge
+  // line, so it widens as the wave recedes and disappears once the
+  // wave surges back up to that peak. Drawn after the sand fill so it
+  // reads as sitting on top of the beach rather than getting painted
+  // over.
   function drawFoam(ctx, scene) {
     const shorePhase = elapsed * (2 * Math.PI / WAVE.period) + WAVE.phaseStep;
     const shoreReach = Math.sin(shorePhase) * WAVE.amplitude;
-    const foamAlpha = clamp(-shoreReach / WAVE.amplitude, 0, 1);
-    if (foamAlpha <= 0) return;
+
+    const shore = scene.shore;
+    const nearLine = shore.map(([x, y]) => [x + WAVE.dir[0] * shoreReach, y + WAVE.dir[1] * shoreReach]);
+    const farLine = shore.map(([x, y]) => [x + WAVE.dir[0] * WAVE.amplitude, y + WAVE.dir[1] * WAVE.amplitude]);
 
     ctx.save();
-    ctx.globalAlpha = foamAlpha;
-    ctx.translate(WAVE.dir[0] * WAVE.amplitude, WAVE.dir[1] * WAVE.amplitude);
-    ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = STROKE.texture;
-    ctx.lineCap = 'round';
-    ctx.setLineDash([3, 9]);
+    ctx.fillStyle = '#ffffff';
     ctx.beginPath();
-    tracePath(ctx, scene.shore);
-    ctx.stroke();
-    ctx.setLineDash([]);
+    tracePath(ctx, nearLine);
+    tracePath(ctx, [...farLine].reverse(), true);
+    ctx.closePath();
+    ctx.fill();
     ctx.restore();
   }
 
