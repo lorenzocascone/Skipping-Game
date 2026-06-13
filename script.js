@@ -10,8 +10,8 @@
 // soft and imperfect rather than mechanically precise.
 //
 // The scene lives in a fixed design space that is uniformly scaled
-// onto the screen, and the player can pan (drag) and zoom (wheel /
-// pinch) a little to adjust the view to taste.
+// onto the screen as a fixed landscape view — the camera never pans
+// or zooms, so the player always sees the whole playable area.
 // =============================================================
 
 (function () {
@@ -68,9 +68,6 @@
                       // sand/sky so the action fills the frame
   };
 
-  // How far the player can zoom relative to the base "cover" scale.
-  const ZOOM = { min: 0.75, max: 1.6 };
-
   // Whether this device supports touch — used to show the on-screen
   // movement joystick only where it's actually needed.
   const TOUCH_ENABLED = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
@@ -113,7 +110,7 @@
   const GRAVITY = 1100; // pulls the stone's height back down, design px/sec^2
   const THROW = {
     speedMin: 300, speedMax: 820, // forward speed at release, design px/sec
-    liftMin: 100, liftMax: 270,   // initial upward speed at release, design px/sec
+    liftMin: 140, liftMax: 380,   // initial upward speed at release, design px/sec
     waveSpatialFreq: 0.0026,      // how quickly the lapping phase shifts with distance out to sea
     popupHold: 0.5,               // seconds a skip count stays fully visible
     popupFade: 0.9,               // seconds it then takes to fade away
@@ -205,7 +202,7 @@
   });
 
   // On-screen joystick for touch movement: a small outlined ring in
-  // the bottom-left corner, matching the rest of the line-art style.
+  // the bottom-right corner, matching the rest of the line-art style.
   // `dx`/`dy` stay in [-1, 1] and scale the player's speed by how far
   // the knob is dragged from centre.
   const joystick = {
@@ -221,7 +218,7 @@
   };
 
   function updateJoystickBase() {
-    joystick.baseX = joystick.radius + 24;
+    joystick.baseX = canvas.width - joystick.radius - 24;
     joystick.baseY = canvas.height - joystick.radius - 24;
   }
 
@@ -694,9 +691,19 @@
     return pointInPolygon(x, y, scene.sandPolygon);
   }
 
+  // How far the player sprite extends beyond its feet (at p.y), used
+  // to keep the whole figure on screen rather than just its anchor
+  // point.
+  const PLAYER_MARGIN = {
+    side: PLAYER_SHAPE.headR + PLAYER_SHAPE.limbSwing + 6,
+    top: PLAYER_SHAPE.legLen + PLAYER_SHAPE.torsoLen + PLAYER_SHAPE.headR * 2 + PLAYER_SHAPE.bobAmount + 10,
+    bottom: 14
+  };
+
   function movePlayer(dx, dy) {
-    const nx = player.x + dx;
-    const ny = player.y + dy;
+    const view = viewportBounds();
+    const nx = clamp(player.x + dx, view.left + PLAYER_MARGIN.side, view.right - PLAYER_MARGIN.side);
+    const ny = clamp(player.y + dy, view.top + PLAYER_MARGIN.top, view.bottom - PLAYER_MARGIN.bottom);
     if (pointInSand(nx, ny)) {
       player.x = nx;
       player.y = ny;
@@ -757,6 +764,7 @@
     ctx.save();
     ctx.translate(p.x, p.y + bob);
     ctx.strokeStyle = PALETTE.outline;
+    ctx.fillStyle = PALETTE.outline;
     ctx.lineWidth = STROKE.thick;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
@@ -768,6 +776,16 @@
     ctx.moveTo(0, hipY);
     ctx.lineTo(-swing, 0);
     ctx.stroke();
+
+    // Small flat foot marks at the base of each leg
+    ctx.lineWidth = STROKE.texture;
+    [swing, -swing].forEach(legX => {
+      ctx.beginPath();
+      ctx.moveTo(legX - 5, 0);
+      ctx.lineTo(legX + 5, 0);
+      ctx.stroke();
+    });
+    ctx.lineWidth = STROKE.thick;
 
     // Torso
     ctx.beginPath();
@@ -783,16 +801,40 @@
     ctx.lineTo(swing, shoulderY + s.armLen);
     ctx.stroke();
 
-    // Head, with a short "nose" mark showing which way it's facing
+    // Hands as small dots at the end of each arm
+    [-swing, swing].forEach(handX => {
+      ctx.beginPath();
+      ctx.arc(handX, shoulderY + s.armLen, 2.6, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    // Head
     ctx.beginPath();
     ctx.arc(0, headY, s.headR, 0, Math.PI * 2);
     ctx.stroke();
 
-    ctx.beginPath();
-    ctx.moveTo(p.facing * s.headR * 0.3, headY);
-    ctx.lineTo(p.facing * s.headR * 1.2, headY);
+    // A little tuft of hair on top
     ctx.lineWidth = STROKE.texture;
+    ctx.beginPath();
+    ctx.moveTo(-s.headR * 0.5, headY - s.headR * 0.8);
+    ctx.lineTo(-s.headR * 0.2, headY - s.headR * 1.5);
+    ctx.moveTo(-s.headR * 0.05, headY - s.headR * 0.95);
+    ctx.lineTo(s.headR * 0.15, headY - s.headR * 1.6);
+    ctx.moveTo(s.headR * 0.4, headY - s.headR * 0.85);
+    ctx.lineTo(s.headR * 0.6, headY - s.headR * 1.45);
     ctx.stroke();
+
+    // An eye on the side the player is facing
+    ctx.beginPath();
+    ctx.arc(p.facing * s.headR * 0.35, headY - s.headR * 0.15, 1.8, 0, Math.PI * 2);
+    ctx.fill();
+
+    // A short "nose" mark showing which way it's facing
+    ctx.beginPath();
+    ctx.moveTo(p.facing * s.headR * 0.3, headY + s.headR * 0.15);
+    ctx.lineTo(p.facing * s.headR * 1.2, headY + s.headR * 0.2);
+    ctx.stroke();
+    ctx.lineWidth = STROKE.thick;
 
     drawHeldStones(ctx, p);
 
@@ -867,7 +909,14 @@
   // Scatters a handful of small stones at random points on the sand,
   // away from the player's starting position.
   function spawnStones() {
-    const bounds = polygonBounds(scene.sandPolygon);
+    const sandBounds = polygonBounds(scene.sandPolygon);
+    const view = viewportBounds();
+    const bounds = {
+      minX: Math.max(sandBounds.minX, view.left),
+      maxX: Math.min(sandBounds.maxX, view.right),
+      minY: Math.max(sandBounds.minY, view.top),
+      maxY: Math.min(sandBounds.maxY, view.bottom)
+    };
     const count = STONE_COUNT_RANGE[0] +
       Math.floor(Math.random() * (STONE_COUNT_RANGE[1] - STONE_COUNT_RANGE[0] + 1));
     const list = [];
@@ -892,19 +941,25 @@
   }
 
   // A random point along the shoreline, nudged inland onto the sand —
-  // used to wash up replacement stones near the water's edge.
+  // used to wash up replacement stones near the water's edge. Kept
+  // within the visible viewport so new stones never appear off-screen.
   function randomShorePoint() {
     const shore = scene.shore;
-    const i = Math.floor(Math.random() * (shore.length - 1));
-    const t = Math.random();
-    let x = shore[i][0] + (shore[i + 1][0] - shore[i][0]) * t;
-    let y = shore[i][1] + (shore[i + 1][1] - shore[i][1]) * t;
-    for (let d = 0; d <= 200; d += 4) {
-      const px = x - SEA_DIR[0] * d;
-      const py = y - SEA_DIR[1] * d;
-      if (pointInSand(px, py)) return [px, py];
+    const view = viewportBounds();
+    const inView = (px, py) => px >= view.left && px <= view.right && py >= view.top && py <= view.bottom;
+
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const i = Math.floor(Math.random() * (shore.length - 1));
+      const t = Math.random();
+      const x = shore[i][0] + (shore[i + 1][0] - shore[i][0]) * t;
+      const y = shore[i][1] + (shore[i + 1][1] - shore[i][1]) * t;
+      for (let d = 0; d <= 200; d += 4) {
+        const px = x - SEA_DIR[0] * d;
+        const py = y - SEA_DIR[1] * d;
+        if (pointInSand(px, py) && inView(px, py)) return [px, py];
+      }
     }
-    return [x, y];
+    return [player.x, player.y];
   }
 
   // Picks up any stone the player is standing on, and eases newly
@@ -1321,6 +1376,10 @@
         ctx.lineTo(s.x + dx * len, s.y + dy * len);
         ctx.stroke();
       });
+      // A soft expanding ripple ring for a satisfying "plop".
+      ctx.beginPath();
+      ctx.ellipse(s.x, s.y, s.length * (0.5 + f * 1.4), s.length * (0.3 + f * 0.8), 0, 0, Math.PI * 2);
+      ctx.stroke();
       ctx.restore();
     });
   }
@@ -1372,29 +1431,22 @@
     cam.cy = minY > maxY ? DESIGN.h / 2 : clamp(cam.cy, minY, maxY);
   }
 
-  function panBy(dxScreen, dyScreen) {
+  // The design-space rectangle currently visible on screen, since the
+  // camera is fixed but the canvas (and therefore the view window)
+  // can still change size on resize.
+  function viewportBounds() {
     const scale = currentScale();
-    cam.cx -= dxScreen / scale;
-    cam.cy -= dyScreen / scale;
-    clampCam();
+    const vw = canvas.width / scale;
+    const vh = canvas.height / scale;
+    return {
+      left: cam.cx - vw / 2,
+      right: cam.cx + vw / 2,
+      top: cam.cy - vh / 2,
+      bottom: cam.cy + vh / 2
+    };
   }
 
-  // Zoom by `factor`, keeping the design point under the given
-  // screen position fixed so the view zooms "into" the cursor.
-  function zoomAt(screenX, screenY, factor) {
-    const oldScale = currentScale();
-    cam.zoom = clamp(cam.zoom * factor, ZOOM.min, ZOOM.max);
-    const newScale = currentScale();
-
-    const dx = screenX - canvas.width / 2;
-    const dy = screenY - canvas.height / 2;
-    cam.cx += dx / oldScale - dx / newScale;
-    cam.cy += dy / oldScale - dy / newScale;
-    clampCam();
-  }
-
-  // --- Input: drag to pan, wheel to zoom, two-finger pinch ---
-  const pointers = new Map();
+  // --- Input: on-screen joystick for movement, drag to aim/throw ---
 
   canvas.addEventListener('pointerdown', e => {
     if (TOUCH_ENABLED && joystick.pointerId === null) {
@@ -1408,20 +1460,15 @@
       }
     }
 
-    // Holding a stone and pressing elsewhere starts an aim/throw,
-    // rather than panning the camera.
-    if (player.heldStones.length > 0 && aiming.pointerId === null && pointers.size === 0) {
+    // Holding a stone and pressing elsewhere starts an aim/throw.
+    if (player.heldStones.length > 0 && aiming.pointerId === null) {
       canvas.setPointerCapture(e.pointerId);
       aiming.pointerId = e.pointerId;
       aiming.active = true;
       aiming.holdTime = 0;
       aiming.power = 0;
       updateAimDirection(e.clientX, e.clientY);
-      return;
     }
-
-    canvas.setPointerCapture(e.pointerId);
-    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   });
 
   canvas.addEventListener('pointermove', e => {
@@ -1432,35 +1479,7 @@
 
     if (e.pointerId === aiming.pointerId) {
       updateAimDirection(e.clientX, e.clientY);
-      return;
     }
-
-    const prev = pointers.get(e.pointerId);
-    if (!prev) return;
-
-    if (pointers.size === 1) {
-      panBy(e.clientX - prev.x, e.clientY - prev.y);
-    } else if (pointers.size === 2) {
-      // The other finger of the pinch
-      let other = null;
-      for (const [id, p] of pointers) {
-        if (id !== e.pointerId) other = p;
-      }
-      const prevDist = Math.hypot(prev.x - other.x, prev.y - other.y);
-      const prevMidX = (prev.x + other.x) / 2;
-      const prevMidY = (prev.y + other.y) / 2;
-      const newDist = Math.hypot(e.clientX - other.x, e.clientY - other.y);
-      const newMidX = (e.clientX + other.x) / 2;
-      const newMidY = (e.clientY + other.y) / 2;
-
-      panBy(newMidX - prevMidX, newMidY - prevMidY);
-      if (prevDist > 0) {
-        zoomAt(newMidX, newMidY, newDist / prevDist);
-      }
-    }
-
-    prev.x = e.clientX;
-    prev.y = e.clientY;
   });
 
   function releasePointer(e) {
@@ -1482,17 +1501,10 @@
       aiming.active = false;
       aiming.holdTime = 0;
       aiming.power = 0;
-      return;
     }
-    pointers.delete(e.pointerId);
   }
   canvas.addEventListener('pointerup', releasePointer);
   canvas.addEventListener('pointercancel', releasePointer);
-
-  canvas.addEventListener('wheel', e => {
-    e.preventDefault();
-    zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0012));
-  }, { passive: false });
 
   // -----------------------------------------------------------
   // Render & game loop
@@ -1565,7 +1577,7 @@
 
   // Kick everything off
   scene = buildScene(DESIGN.w, DESIGN.h);
-  stones = spawnStones();
   resize();
+  stones = spawnStones();
   requestAnimationFrame(loop);
 })();
