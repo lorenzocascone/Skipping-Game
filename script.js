@@ -87,11 +87,13 @@
   };
 
   // Direction pointing from the shore out toward open sea — the
-  // opposite of the ripples' shoreward drift — and the limits for
-  // the stone-throwing aim/power interaction.
+  // opposite of the ripples' shoreward drift. Every throw travels
+  // along this single axis, as if always tossed out into the depth
+  // of the scene; the limits below shape the aim/power interaction
+  // that instead controls the throw's arc.
   const SEA_DIR = [-WAVE.dir[0], -WAVE.dir[1]];
   const AIM = {
-    maxAngle: Math.PI * 0.4, // how far the aim can swing from straight out to sea
+    maxElevation: Math.PI * 0.4, // how far up the aim can swing, raising the throw's arc
     lineLength: 110,
     barWidth: 70,
     barHeight: 10,
@@ -171,14 +173,15 @@
   };
 
   // Aiming/throwing state: while the player holds a stone and holds
-  // down the pointer, an aiming line and power bar appear. `dirX/dirY`
-  // is a unit vector clamped to a cone around SEA_DIR, and `power`
-  // loops smoothly between 0 and 1 for as long as the pointer is held.
+  // down the pointer, an aiming line and power bar appear. `elevation`
+  // (0-1) is how far up the player has aimed, raising the throw's arc,
+  // and `power` loops smoothly between 0 and 1 for as long as the
+  // pointer is held, setting the throw's forward speed. Every throw
+  // still travels straight out along SEA_DIR.
   const aiming = {
     pointerId: null,
     active: false,
-    dirX: SEA_DIR[0],
-    dirY: SEA_DIR[1],
+    elevation: 0,
     holdTime: 0,
     power: 0
   };
@@ -659,7 +662,7 @@
     if (foamAlpha <= 0) return;
 
     ctx.save();
-    ctx.globalAlpha = foamAlpha * 0.8;
+    ctx.globalAlpha = foamAlpha;
     ctx.translate(WAVE.dir[0] * WAVE.amplitude, WAVE.dir[1] * WAVE.amplitude);
     ctx.strokeStyle = '#ffffff';
     ctx.lineWidth = STROKE.texture;
@@ -937,26 +940,22 @@
   // that loops smoothly between empty and full.
   // -----------------------------------------------------------
 
-  // Points the aim toward the given screen position, clamped to a
-  // cone around the seaward direction so the throw always heads
-  // roughly out to sea.
+  // Reads how far "up" the player is aiming relative to straight out
+  // to sea, and turns that into an elevation (0-1) that raises the
+  // throw's arc. Aiming level or downward gives a flat, grounded
+  // throw; the direction itself never changes — every throw still
+  // travels along SEA_DIR.
   function updateAimDirection(clientX, clientY) {
     const [tx, ty] = screenToDesign(clientX, clientY);
-    let dx = tx - player.x;
-    let dy = ty - player.y;
-    const mag = Math.hypot(dx, dy) || 1;
-    dx /= mag;
-    dy /= mag;
+    const dx = tx - player.x;
+    const dy = ty - player.y;
 
     const seaAngle = Math.atan2(SEA_DIR[1], SEA_DIR[0]);
-    let angle = Math.atan2(dy, dx);
+    const angle = Math.atan2(dy, dx);
     let diff = angle - seaAngle;
     diff = Math.atan2(Math.sin(diff), Math.cos(diff)); // normalize to [-PI, PI]
-    diff = clamp(diff, -AIM.maxAngle, AIM.maxAngle);
-    angle = seaAngle + diff;
 
-    aiming.dirX = Math.cos(angle);
-    aiming.dirY = Math.sin(angle);
+    aiming.elevation = clamp(-diff / AIM.maxElevation, 0, 1);
   }
 
   // Advances the power bar's smooth empty-full-empty loop while the
@@ -996,8 +995,10 @@
 
     const startX = p.x;
     const startY = p.y - PLAYER_SHAPE.legLen - PLAYER_SHAPE.torsoLen * 0.5;
-    const endX = startX + aim.dirX * AIM.lineLength;
-    const endY = startY + aim.dirY * AIM.lineLength;
+    const seaAngle = Math.atan2(SEA_DIR[1], SEA_DIR[0]);
+    const aimAngle = seaAngle - aim.elevation * AIM.maxElevation;
+    const endX = startX + Math.cos(aimAngle) * AIM.lineLength;
+    const endY = startY + Math.sin(aimAngle) * AIM.lineLength;
 
     // Aiming line: a soft dashed stroke with a small dot at the tip.
     ctx.save();
@@ -1075,10 +1076,14 @@
     return Math.sin(phase);
   }
 
-  // Launches a held stone out to sea along the current aim direction,
-  // with a speed and lift drawn from the release power.
-  function throwStone(stone, power, dirX, dirY) {
+  // Launches a held stone out to sea along the fixed SEA_DIR axis —
+  // every throw heads straight into the depth of the scene. Power sets
+  // its forward speed, while elevation (how far up the player aimed)
+  // sets how high it arcs before dropping back down.
+  function throwStone(stone, power, elevation) {
     const s = PLAYER_SHAPE;
+    const dirX = SEA_DIR[0];
+    const dirY = SEA_DIR[1];
     throws.push({
       shape: stone.shape,
       x: player.x + dirX * (s.headR + 10),
@@ -1086,7 +1091,7 @@
       dirX, dirY,
       speed: THROW.speedMin + power * (THROW.speedMax - THROW.speedMin),
       height: 0,
-      vHeight: THROW.liftMin + power * (THROW.liftMax - THROW.liftMin),
+      vHeight: THROW.liftMin + elevation * (THROW.liftMax - THROW.liftMin),
       power,
       rot: 0,
       skips: 0,
@@ -1445,7 +1450,7 @@
     if (e.pointerId === aiming.pointerId) {
       if (player.heldStones.length > 0) {
         const stone = player.heldStones.pop();
-        throwStone(stone, aiming.power, aiming.dirX, aiming.dirY);
+        throwStone(stone, aiming.power, aiming.elevation);
       }
       aiming.pointerId = null;
       aiming.active = false;
