@@ -113,8 +113,22 @@
     waveSpatialFreq: 0.0026,      // how quickly the lapping phase shifts with distance out to sea
     popupHold: 0.5,               // seconds a skip count stays fully visible
     popupFade: 0.9,               // seconds it then takes to fade away
-    sinkTime: 0.9                 // seconds a settled stone takes to fade out
+    sinkTime: 0.9,                // seconds a settled stone takes to fade out
+    trailLength: 16               // how many recent positions the fading trail keeps
   };
+
+  // A brief radiating-lines splash where a thrown stone meets the water.
+  const SPLASH = {
+    life: 0.45,   // seconds the splash takes to grow and fade
+    lines: 5,     // number of radiating lines
+    length: 14    // how far the lines reach at full growth, design px
+  };
+
+  // How long a freshly washed-up stone takes to fade fully into view,
+  // and how long after a thrown stone settles before a replacement
+  // washes up so the player never runs out.
+  const STONE_FADE_TIME = 1.2;
+  const RESPAWN_DELAY = [3, 6];
 
   // -----------------------------------------------------------
   // Canvas setup
@@ -546,6 +560,19 @@
       ctx.stroke();
       ctx.restore();
     });
+
+    // A wave line that hugs the shore itself, one step ahead of the
+    // nearest ripple in the lapping cycle, so the wave pattern reads
+    // as continuing right up to the sand rather than stopping short.
+    const shorePhase = elapsed * (2 * Math.PI / WAVE.period) + WAVE.phaseStep;
+    const shoreReach = Math.sin(shorePhase) * WAVE.amplitude;
+
+    ctx.save();
+    ctx.translate(WAVE.dir[0] * shoreReach, WAVE.dir[1] * shoreReach);
+    ctx.beginPath();
+    tracePath(ctx, scene.shore);
+    ctx.stroke();
+    ctx.restore();
   }
 
   // The big headland: its closed silhouette runs over the ridge,
@@ -618,6 +645,31 @@
     ctx.beginPath();
     tracePath(ctx, scene.waterline.slice(split));
     strokeOutline(ctx, STROKE.thick);
+  }
+
+  // As the shore-hugging wave pulls back from its high-water mark, a
+  // scalloped white foam line lingers on the wet sand it just covered —
+  // visible only while the wave is receded, fading back out as it
+  // returns. Drawn after the sand fill so it reads as sitting on top
+  // of the beach rather than getting painted over.
+  function drawFoam(ctx, scene) {
+    const shorePhase = elapsed * (2 * Math.PI / WAVE.period) + WAVE.phaseStep;
+    const shoreReach = Math.sin(shorePhase) * WAVE.amplitude;
+    const foamAlpha = clamp(-shoreReach / WAVE.amplitude, 0, 1);
+    if (foamAlpha <= 0) return;
+
+    ctx.save();
+    ctx.globalAlpha = foamAlpha * 0.8;
+    ctx.translate(WAVE.dir[0] * WAVE.amplitude, WAVE.dir[1] * WAVE.amplitude);
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = STROKE.texture;
+    ctx.lineCap = 'round';
+    ctx.setLineDash([3, 9]);
+    ctx.beginPath();
+    tracePath(ctx, scene.shore);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
   }
 
   // -----------------------------------------------------------
@@ -810,17 +862,36 @@
         x, y,
         rot: Math.random() * Math.PI,
         shape: pebbleShape(rx, ry),
-        collected: false
+        collected: false,
+        spawnAge: STONE_FADE_TIME // already fully visible at the start
       });
     }
     return list;
   }
 
-  // Picks up any stone the player is standing on.
-  function updateStones() {
+  // A random point along the shoreline, nudged inland onto the sand —
+  // used to wash up replacement stones near the water's edge.
+  function randomShorePoint() {
+    const shore = scene.shore;
+    const i = Math.floor(Math.random() * (shore.length - 1));
+    const t = Math.random();
+    let x = shore[i][0] + (shore[i + 1][0] - shore[i][0]) * t;
+    let y = shore[i][1] + (shore[i + 1][1] - shore[i][1]) * t;
+    for (let d = 0; d <= 200; d += 4) {
+      const px = x - SEA_DIR[0] * d;
+      const py = y - SEA_DIR[1] * d;
+      if (pointInSand(px, py)) return [px, py];
+    }
+    return [x, y];
+  }
+
+  // Picks up any stone the player is standing on, and eases newly
+  // washed-up stones into full visibility.
+  function updateStones(dt) {
     const pickupRadius = 26;
     stones.forEach(stone => {
       if (stone.collected) return;
+      stone.spawnAge = Math.min(STONE_FADE_TIME, stone.spawnAge + dt);
       const d = Math.hypot(stone.x - player.x, stone.y - player.y);
       if (d < pickupRadius) {
         stone.collected = true;
@@ -830,11 +901,13 @@
   }
 
   // Draws the stones still lying on the sand as small wobble-stroked
-  // pebbles, filled with a soft neutral tone.
+  // pebbles, filled with a soft neutral tone. Freshly washed-up stones
+  // fade gently into view.
   function drawStones(ctx, stones) {
     stones.forEach(stone => {
       if (stone.collected) return;
       ctx.save();
+      ctx.globalAlpha = clamp(stone.spawnAge / STONE_FADE_TIME, 0, 1);
       ctx.translate(stone.x, stone.y);
       ctx.rotate(stone.rot);
       drawPebble(ctx, stone.shape);
@@ -976,6 +1049,23 @@
 
   let throws = [];
 
+  // A few short white lines that radiate outward and fade where a
+  // thrown stone meets the water.
+  let splashes = [];
+
+  // The best skip count reached so far this session, shown in the HUD.
+  let bestSkips = 0;
+
+  // Seconds remaining until each pending replacement stone washes up
+  // on the beach, so the player never runs out.
+  let pendingRespawns = [];
+
+  function scheduleRespawn() {
+    pendingRespawns.push(
+      RESPAWN_DELAY[0] + Math.random() * (RESPAWN_DELAY[1] - RESPAWN_DELAY[0])
+    );
+  }
+
   // The lapping wave's phase at a point in design space, matching the
   // ripple lines' rhythm: +1 is a wave at its peak (surging toward the
   // shore), -1 is the trough between waves.
@@ -1002,11 +1092,22 @@
       skips: 0,
       state: 'flying',
       sinkAge: 0,
+      trail: [],
       popupText: '',
       popupX: 0,
       popupY: 0,
       popupAge: null
     });
+  }
+
+  // Spawns a brief radiating-lines splash at a water impact point.
+  function spawnSplash(x, y) {
+    const n = SPLASH.lines;
+    const angles = [];
+    for (let i = 0; i < n; i++) {
+      angles.push(-Math.PI / 2 + (i - (n - 1) / 2) * 0.35 + (Math.random() - 0.5) * 0.15);
+    }
+    splashes.push({ x, y, age: 0, angles });
   }
 
   // Decides what happens when the stone reaches the water (or sand)
@@ -1018,6 +1119,8 @@
       t.state = 'sinking';
       return;
     }
+
+    spawnSplash(t.x, t.y);
 
     const angleFactor = t.speed / Math.hypot(t.speed, Math.abs(t.vHeight));
     const waveVal = waveSurfaceAt(t.x, t.y, elapsed);
@@ -1032,6 +1135,7 @@
     }
 
     t.skips += 1;
+    if (t.skips > bestSkips) bestSkips = t.skips;
     t.speed *= 0.45 + bounceFactor * 0.3;
     t.vHeight = Math.max(60, t.speed * (0.35 + bounceFactor * 0.25));
     t.popupText += (t.popupText ? ' ' : '') + t.skips + '...';
@@ -1040,7 +1144,8 @@
     t.popupAge = 0;
   }
 
-  // Advances every in-flight or settling stone.
+  // Advances every in-flight or settling stone, plus the splashes and
+  // pending replacement stones they leave behind.
   function updateThrows(dt) {
     for (let i = throws.length - 1; i >= 0; i--) {
       const t = throws[i];
@@ -1051,7 +1156,10 @@
         t.sinkAge += dt;
         const popupDone = t.popupAge === null ||
           t.popupAge > THROW.popupHold + THROW.popupFade;
-        if (t.sinkAge > THROW.sinkTime && popupDone) throws.splice(i, 1);
+        if (t.sinkAge > THROW.sinkTime && popupDone) {
+          throws.splice(i, 1);
+          scheduleRespawn();
+        }
         continue;
       }
 
@@ -1062,6 +1170,9 @@
       t.y += t.dirY * t.speed * dt;
       t.rot += dt * (1.5 + t.speed * 0.004);
 
+      t.trail.push([t.x, t.y - t.height]);
+      if (t.trail.length > THROW.trailLength) t.trail.shift();
+
       if (prevHeight >= 0 && t.height < 0) {
         t.height = 0;
         handleImpact(t);
@@ -1069,13 +1180,55 @@
     }
   }
 
-  // Draws every in-flight or settling stone: a soft shadow on the
-  // ground/water, the pebble itself (lifted, fading and shrinking as
-  // it settles), and a gently fading skip-count popup.
+  // Advances each splash's brief grow-and-fade animation.
+  function updateSplashes(dt) {
+    for (let i = splashes.length - 1; i >= 0; i--) {
+      splashes[i].age += dt;
+      if (splashes[i].age > SPLASH.life) splashes.splice(i, 1);
+    }
+  }
+
+  // Counts down to each pending replacement stone washing ashore.
+  function updateRespawns(dt) {
+    for (let i = pendingRespawns.length - 1; i >= 0; i--) {
+      pendingRespawns[i] -= dt;
+      if (pendingRespawns[i] <= 0) {
+        pendingRespawns.splice(i, 1);
+        const [x, y] = randomShorePoint();
+        const rx = 7 + Math.random() * 5;
+        const ry = 5 + Math.random() * 3;
+        stones.push({
+          x, y,
+          rot: Math.random() * Math.PI,
+          shape: pebbleShape(rx, ry),
+          collected: false,
+          spawnAge: 0
+        });
+      }
+    }
+  }
+
+  // Draws every in-flight or settling stone: a fading trail behind it,
+  // a soft shadow on the ground/water, the pebble itself (lifted,
+  // fading and shrinking as it settles), and a gently fading
+  // skip-count popup.
   function drawThrows(ctx) {
     throws.forEach(t => {
       const sinkFrac = t.state === 'sinking'
         ? clamp(t.sinkAge / THROW.sinkTime, 0, 1) : 0;
+
+      // A gentle, fading trail of the stone's recent positions.
+      const trailLen = t.trail.length;
+      t.trail.forEach(([tx, ty], idx) => {
+        const f = (idx + 1) / trailLen;
+        ctx.save();
+        ctx.globalAlpha = f * 0.25 * (1 - sinkFrac);
+        ctx.beginPath();
+        ctx.arc(tx, ty, 2 + 3 * f, 0, Math.PI * 2);
+        ctx.fillStyle = PALETTE.outline;
+        ctx.fill();
+        ctx.restore();
+      });
 
       // Shadow on the sand or water surface.
       ctx.save();
@@ -1115,6 +1268,43 @@
         }
       }
     });
+  }
+
+  // Draws each splash as a few short white lines growing outward from
+  // the impact point and fading away.
+  function drawSplashes(ctx) {
+    splashes.forEach(s => {
+      const f = s.age / SPLASH.life;
+      const alpha = clamp(1 - f, 0, 1) * 0.8;
+      const len = SPLASH.length * (0.4 + 0.6 * f);
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = STROKE.texture;
+      ctx.lineCap = 'round';
+      s.angles.forEach(a => {
+        const dx = Math.cos(a);
+        const dy = Math.sin(a);
+        ctx.beginPath();
+        ctx.moveTo(s.x + dx * len * 0.3, s.y + dy * len * 0.3);
+        ctx.lineTo(s.x + dx * len, s.y + dy * len);
+        ctx.stroke();
+      });
+      ctx.restore();
+    });
+  }
+
+  // -----------------------------------------------------------
+  // HUD: a small "Best Skips" counter in the corner, drawn in screen
+  // space so it stays put regardless of camera pan/zoom.
+  // -----------------------------------------------------------
+  function drawHUD(ctx) {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.font = '600 20px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = 'rgba(46, 58, 86, 0.55)';
+    ctx.fillText(`Best Skips: ${bestSkips}`, 20, 20);
   }
 
   // -----------------------------------------------------------
@@ -1297,12 +1487,15 @@
     drawMountainFar(ctx, scene);
     drawSand(ctx, scene, h);
     drawWaterline(ctx, scene);
+    drawFoam(ctx, scene);
     drawStones(ctx, stones);
     drawPlayer(ctx, player);
     drawAiming(ctx, player, aiming);
     drawThrows(ctx);
+    drawSplashes(ctx);
 
     drawJoystick(ctx);
+    drawHUD(ctx);
   }
 
   function update(timestamp) {
@@ -1313,9 +1506,11 @@
     }
     lastTimestamp = timestamp;
     updatePlayer(dt);
-    updateStones();
+    updateStones(dt);
     updateAiming(dt);
     updateThrows(dt);
+    updateSplashes(dt);
+    updateRespawns(dt);
   }
 
   function loop(timestamp) {
